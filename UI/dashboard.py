@@ -8,7 +8,7 @@ class DashboardUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.showMaximized()
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
         self.status = "IDLE"
@@ -202,6 +202,8 @@ class DashboardUI(QMainWindow):
 
     def set_status(self, state):
         self.status = state
+        if hasattr(self, 'reactor'):
+            self.reactor.set_status(state)
         self.update()
 
 if __name__ == "__main__":

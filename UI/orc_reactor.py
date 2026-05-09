@@ -1,12 +1,13 @@
 import sys
+import math
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import Qt, QPointF, QRectF, QTimer
-from PyQt6.QtGui import QColor, QPainter, QPen, QFont, QPainterPath
+from PyQt6.QtGui import QColor, QPainter, QPen, QFont, QPainterPath, QRadialGradient
 
 class OrcReactor(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(550, 550)
+        self.setMinimumSize(400, 400)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
         # Animation setup
@@ -19,6 +20,13 @@ class OrcReactor(QWidget):
         self.rotation_angle_8 = 0
         self.rotation_angle_9 = 0
         self.rotation_angle_10 = 0
+        self.status = "IDLE"
+        self.pulse_phase = 0
+        
+        # Smooth Animation Variables
+        self.current_c9_radius = 220 * 0.7 
+        self.target_c9_radius = 220 * 0.7
+        
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_animation)
         self.timer.start(16) # ~60 FPS
@@ -33,88 +41,169 @@ class OrcReactor(QWidget):
         self.rotation_angle_8 += 0.5 # Slow clockwise for Circle 8
         self.rotation_angle_9 -= 0.8 # Slow counter-clockwise for Circle 9
         self.rotation_angle_10 += 0.3 # Very slow clockwise for Circle 10
+        
+        # --- Smooth Radius Transitions ---
+        S = 0.7
+        if self.status == "LISTENING":
+            self.target_c9_radius = (170 + 35) * S
+        elif self.status in ["SPEAKING", "THINKING"]:
+            self.target_c9_radius = 260 * S
+        else: # IDLE
+            self.target_c9_radius = 220 * S
+            
+        lerp_speed = 0.08
+        self.current_c9_radius += (self.target_c9_radius - self.current_c9_radius) * lerp_speed
+
+        # Always increment pulse_phase for continuous breathing
+        self.pulse_phase += 0.08 if self.status != "SPEAKING" else 0.15
+            
+        self.update()
+
+    def set_status(self, state):
+        self.status = state
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        center = QPointF(self.width() / 2, self.height() / 2)
-        radius = 80
-        outer_radius = 85
-        circle3_radius = 95
-        circle4_radius = 115
-        circle5_radius = 125
-        circle6_radius = 135
-        circle7_radius = 147
-        circle8_radius = 175
-        circle9_radius = 220
-        circle10_radius = 240
+        center = QPointF(self.width() / 2.0, self.height() / 2.0)
         
-        # Circle 10 (Outer-most, Sensor Array)
-        painter.save()
-        painter.translate(center)
-        painter.rotate(self.rotation_angle_10)
-        painter.translate(-center)
+        # Global Scale Factor
+        S = 0.7
         
-        marker_pen10 = QPen(QColor(150, 150, 150), 1.5)
-        painter.setPen(marker_pen10)
-        dot_size10 = 2
+        radius = 80 * S
+        outer_radius = 85 * S
+        # --- Breathing effect (Ripple: Circle 3 to Circle 8) ---
+        # "spread bigger" amplitude for C3, with propagation delay for others
+        def get_pulse_radius(base_r, phase_delay, amp):
+            # Scale amplitude: full for SPEAKING, subtle for others
+            amp_scale = 1.0 if self.status == "SPEAKING" else 0.5
+            return (base_r * S) + (math.sin(self.pulse_phase - phase_delay) * (amp * S * amp_scale))
+
+        circle3_radius = get_pulse_radius(95, 0.0, 20) # Core: highest amplitude
+        circle4_radius = get_pulse_radius(115, 0.25, 14)
+        circle5_radius = get_pulse_radius(125, 0.5, 10)
+        circle6_radius = get_pulse_radius(135, 0.75, 7)
+        circle7_radius = get_pulse_radius(147, 1.0, 5)
+        circle8_radius = get_pulse_radius(170, 1.25, 3)
         
-        import math
-        for angle in [45, 135, 225, 315]:
-            rad = math.radians(angle)
-            # Draw only 1 dot at each diagonal
-            dot_radius = circle10_radius
-            px = center.x() + dot_radius * math.cos(rad)
-            py = center.y() + dot_radius * math.sin(rad)
-            painter.setBrush(QColor(150, 150, 150))
-            painter.drawEllipse(QPointF(px, py), dot_size10/2, dot_size10/2)
-        
-        painter.restore()
-        
-        # Circle 9 (Outer-most, HUD markers)
-        painter.save()
-        painter.translate(center)
-        painter.rotate(self.rotation_angle_9)
-        painter.translate(-center)
-        
-        marker_pen9 = QPen(QColor(255, 255, 255), 1.5)
-        painter.setPen(marker_pen9)
-        marker_len9 = 8
-        
-        # Draw 4 cardinal markers (Top, Bottom, Left, Right)
-        # Top
-        painter.drawLine(int(center.x()), int(center.y() - circle9_radius - marker_len9/2),
-                         int(center.x()), int(center.y() - circle9_radius + marker_len9/2))
-        # Bottom
-        painter.drawLine(int(center.x()), int(center.y() + circle9_radius - marker_len9/2),
-                         int(center.x()), int(center.y() + circle9_radius + marker_len9/2))
-        # Left
-        painter.drawLine(int(center.x() - circle9_radius - marker_len9/2), int(center.y()),
-                         int(center.x() - circle9_radius + marker_len9/2), int(center.y()))
-        # Right
-        painter.drawLine(int(center.x() + circle9_radius - marker_len9/2), int(center.y()),
-                         int(center.x() + circle9_radius + marker_len9/2), int(center.y()))
-        
-        # Draw 4 diagonal markers (Double Line Style)
-        import math
-        offset = 1.5 # Offset for double line
-        for angle in [45, 135, 225, 315]:
-            rad = math.radians(angle)
-            # Parallel offset logic: shift the points perpendicular to the radial direction
-            perp_rad = rad + math.pi/2
-            dx = math.cos(perp_rad) * offset
-            dy = math.sin(perp_rad) * offset
+        # --- Dynamic HUD Geometry Visibility (States) ---
+        if self.status == "LISTENING":
+            show_cardinal = False
+            rotate_9 = True
+            show_c10 = True
+        elif self.status == "THINKING":
+            show_cardinal = True
+            rotate_9 = True
+            show_c10 = False
+        elif self.status == "SPEAKING":
+            show_cardinal = False
+            rotate_9 = False
+            show_c10 = False
+        else: # IDLE
+            show_cardinal = True
+            rotate_9 = True
+            show_c10 = True
+
+        circle9_radius = self.current_c9_radius
+
+        # Energy Fog Effect (Circle 3 to Circle 8) - Active on Speaking
+        if self.status == "SPEAKING":
+            painter.save()
+            fog_radius = circle8_radius + 20
+            fog_grad = QRadialGradient(center, fog_radius)
+            # Oscillate opacity for the "fog"
+            fog_alpha = int(40 + math.sin(self.pulse_phase) * 20)
             
-            for side in [-1, 1]:
-                x_start = center.x() + (circle9_radius - marker_len9/2) * math.cos(rad) + side * dx
-                y_start = center.y() + (circle9_radius - marker_len9/2) * math.sin(rad) + side * dy
-                x_end = center.x() + (circle9_radius + marker_len9/2) * math.cos(rad) + side * dx
-                y_end = center.y() + (circle9_radius + marker_len9/2) * math.sin(rad) + side * dy
-                painter.drawLine(int(x_start), int(y_start), int(x_end), int(y_end))
+            stop_start = circle3_radius / fog_radius
+            stop_end = circle8_radius / fog_radius
+            
+            fog_grad.setColorAt(0, QColor(0, 102, 255, 0)) # Clear inside
+            fog_grad.setColorAt(stop_start, QColor(0, 102, 255, fog_alpha)) # Blue fog starts at C3
+            fog_grad.setColorAt(stop_end, QColor(0, 102, 255, 0)) # Fades out by C8
+            
+            painter.setBrush(fog_grad)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(center, int(fog_radius), int(fog_radius))
+            painter.restore()
+        
+        # --- Circle 9 (Tactical Markers) ---
+        painter.save()
+        if rotate_9:
+            painter.translate(center)
+            painter.rotate(self.rotation_angle_9)
+            painter.translate(-center)
+            
+        marker_len9 = 15 * S
+        offset = 4 * S
+        marker_pen9 = QPen(QColor(255, 255, 255), 1.5 * S)
+        
+        for angle in range(0, 360, 45):
+            rad = math.radians(angle)
+            
+            if angle in [0, 90, 180, 270]:
+                # Cardinal: Single Line
+                if show_cardinal:
+                    dim_pen = QPen(QColor(150, 150, 150), 1.5 * S)
+                    painter.setPen(dim_pen)
+                    x_start = center.x() + (circle9_radius - marker_len9/2) * math.cos(rad)
+                    y_start = center.y() + (circle9_radius - marker_len9/2) * math.sin(rad)
+                    x_end = center.x() + (circle9_radius + marker_len9/2) * math.cos(rad)
+                    y_end = center.y() + (circle9_radius + marker_len9/2) * math.sin(rad)
+                    painter.drawLine(int(x_start), int(y_start), int(x_end), int(y_end))
+            else:
+                # Diagonal: Double Line (with Glow/Brightness Effect)
+                perp_rad = rad + math.pi/2
+                dx = math.cos(perp_rad) * offset
+                dy = math.sin(perp_rad) * offset
+                
+                # --- GLOW PASS for Double Lines ---
+                glow_pen = QPen(QColor(255, 255, 255, 60), 3.5 * S)
+                painter.setPen(glow_pen)
+                for side in [-1, 1]:
+                    x_start = center.x() + (circle9_radius - marker_len9/2) * math.cos(rad) + side * dx
+                    y_start = center.y() + (circle9_radius - marker_len9/2) * math.sin(rad) + side * dy
+                    x_end = center.x() + (circle9_radius + marker_len9/2) * math.cos(rad) + side * dx
+                    y_end = center.y() + (circle9_radius + marker_len9/2) * math.sin(rad) + side * dy
+                    painter.drawLine(int(x_start), int(y_start), int(x_end), int(y_end))
+                
+                # --- MAIN PASS (Full White) ---
+                painter.setPen(marker_pen9)
+                for side in [-1, 1]:
+                    x_start = center.x() + (circle9_radius - marker_len9/2) * math.cos(rad) + side * dx
+                    y_start = center.y() + (circle9_radius - marker_len9/2) * math.sin(rad) + side * dy
+                    x_end = center.x() + (circle9_radius + marker_len9/2) * math.cos(rad) + side * dx
+                    y_end = center.y() + (circle9_radius + marker_len9/2) * math.sin(rad) + side * dy
+                    painter.drawLine(int(x_start), int(y_start), int(x_end), int(y_end))
         
         painter.restore()
+
+        # Circle 10 (Outer-most, Sensor Array)
+        if show_c10:
+            painter.save()
+            painter.translate(center)
+            # In IDLE, if we want dots to match C9 rotating double lines, they must share rotation
+            if self.status == "IDLE":
+                painter.rotate(self.rotation_angle_9)
+            else:
+                painter.rotate(self.rotation_angle_10)
+            painter.translate(-center)
+            
+            marker_pen10 = QPen(QColor(150, 150, 150), 1.5 * S)
+            painter.setPen(marker_pen10)
+            dot_size10 = 2 * S
+            circle10_radius = 240 * S
+            
+            for angle in [45, 135, 225, 315]:
+                rad = math.radians(angle)
+                # Draw only 1 dot at each diagonal
+                dot_radius = circle10_radius
+                px = center.x() + dot_radius * math.cos(rad)
+                py = center.y() + dot_radius * math.sin(rad)
+                painter.setBrush(QColor(150, 150, 150))
+                painter.drawEllipse(QPointF(px, py), dot_size10/2, dot_size10/2)
+            painter.restore()
         
         # Circle 8 (Outer-most, Dotted)
         painter.save()
@@ -122,11 +211,12 @@ class OrcReactor(QWidget):
         painter.rotate(self.rotation_angle_8)
         painter.translate(-center)
         
-        dot_pen = QPen(QColor(200, 200, 200), 2)
+        dot_pen = QPen(QColor(200, 200, 200), 2 * S)
         dot_pen.setStyle(Qt.PenStyle.CustomDashLine)
         dot_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        # r = 175, C = 1099.5, with 64 dots: 1099.5 / 64 = 17.18
-        dot_pen.setDashPattern([0.01, 17.18]) 
+        # Scale dash pattern
+        dash_len = (17.18 * S)
+        dot_pen.setDashPattern([0.01, dash_len]) 
         painter.setPen(dot_pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         
@@ -142,9 +232,9 @@ class OrcReactor(QWidget):
         painter.drawArc(rect, (90 + 5) * 16, (180 - 10) * 16)
         
         # Top and Bottom vertical markers (Drawn INSIDE to rotate together)
-        marker_pen = QPen(QColor(200, 200, 200), 2)
+        marker_pen = QPen(QColor(200, 200, 200), 2 * S)
         painter.setPen(marker_pen)
-        marker_len = 5
+        marker_len = 5 * S
         # Top
         painter.drawLine(int(center.x()), int(center.y() - circle8_radius - marker_len/2),
                          int(center.x()), int(center.y() - circle8_radius + marker_len/2))
@@ -160,13 +250,10 @@ class OrcReactor(QWidget):
         painter.rotate(self.rotation_angle_7)
         painter.translate(-center)
         
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(255, 255, 255))
-        
         path7 = QPainterPath()
         start_angle7 = -60
         span_angle7 = -30
-        thickness7 = 4
+        thickness7 = 4 * S
         
         path7.arcMoveTo(center.x() - circle7_radius, center.y() - circle7_radius, circle7_radius * 2, circle7_radius * 2, start_angle7)
         path7.arcTo(center.x() - circle7_radius, center.y() - circle7_radius, circle7_radius * 2, circle7_radius * 2, start_angle7, span_angle7)
@@ -174,6 +261,10 @@ class OrcReactor(QWidget):
         inner_r7 = circle7_radius - thickness7
         path7.arcTo(center.x() - inner_r7, center.y() - inner_r7, inner_r7 * 2, inner_r7 * 2, start_angle7 + span_angle7 - 5, - (span_angle7 - 10))
         path7.closeSubpath()
+
+        # Main Path
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(255, 255, 255))
         painter.drawPath(path7)
         painter.restore()
         
@@ -183,7 +274,7 @@ class OrcReactor(QWidget):
         painter.rotate(self.rotation_angle_6)
         painter.translate(-center)
         
-        painter.setPen(QPen(QColor(80, 80, 80), 2))
+        painter.setPen(QPen(QColor(80, 80, 80), 2 * S))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawArc(int(center.x() - circle6_radius), int(center.y() - circle6_radius), 
                         int(circle6_radius * 2), int(circle6_radius * 2), 
@@ -196,7 +287,7 @@ class OrcReactor(QWidget):
         painter.rotate(self.rotation_angle_5)
         painter.translate(-center)
         
-        painter.setPen(QPen(QColor(180, 180, 180), 2))
+        painter.setPen(QPen(QColor(180, 180, 180), 2 * S))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawArc(int(center.x() - circle5_radius), int(center.y() - circle5_radius), 
                         int(circle5_radius * 2), int(circle5_radius * 2), 
@@ -209,22 +300,36 @@ class OrcReactor(QWidget):
         painter.rotate(self.rotation_angle_4)
         painter.translate(-center)
         
-        painter.setPen(QPen(QColor(80, 80, 80), 2))
+        painter.setPen(QPen(QColor(80, 80, 80), 2 * S))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawArc(int(center.x() - circle4_radius), int(center.y() - circle4_radius), 
                         int(circle4_radius * 2), int(circle4_radius * 2), 
                         0, 90 * 16)
         painter.restore()
         
-        # Circle 3 (Outer-most, Light Blue)
+        # Circle 3 (Electric Core Glow)
         painter.save()
         painter.translate(center)
         painter.rotate(self.rotation_angle_3)
         painter.translate(-center)
         
-        painter.setPen(QPen(QColor("#00CCFF"), 1.5))
+        # Create a radial gradient for the "core line" effect
+        # We target the area around circle3_radius (95)
+        grad3 = QRadialGradient(center, circle3_radius + 4)
+        # Navy fade-in
+        grad3.setColorAt((circle3_radius - 4) / (circle3_radius + 4), QColor(0, 0, 51, 50)) 
+        # Electric Blue
+        grad3.setColorAt((circle3_radius - 2) / (circle3_radius + 4), QColor(0, 102, 255))
+        # Bright Core
+        grad3.setColorAt(circle3_radius / (circle3_radius + 4), QColor(255, 255, 255))
+        # Electric Blue
+        grad3.setColorAt((circle3_radius + 2) / (circle3_radius + 4), QColor(0, 102, 255))
+        # Navy fade-out
+        grad3.setColorAt(1.0, QColor(0, 0, 51, 50))
+        
+        c3_pen = QPen(grad3, 6 * S) # Thicker to show the gradient
+        painter.setPen(c3_pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        # Full solid circle
         painter.drawEllipse(center, circle3_radius, circle3_radius)
         painter.restore()
         
@@ -234,15 +339,10 @@ class OrcReactor(QWidget):
         painter.rotate(self.rotation_angle)
         painter.translate(-center)
         
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(255, 255, 255))
-        
         outer_path = QPainterPath()
-        # Define angles for the slice (start and end)
-        # We use a small offset between inner and outer points to create the diagonal cut
         start_angle = -90
         end_angle = -60
-        thickness = 5
+        thickness = 5 * S
         
         # Outer Arc
         outer_path.arcMoveTo(center.x() - outer_radius, center.y() - outer_radius, outer_radius * 2, outer_radius * 2, start_angle)
@@ -251,24 +351,26 @@ class OrcReactor(QWidget):
         # Diagonal cut at the end (tip)
         inner_r = outer_radius - thickness
         outer_path.arcTo(center.x() - inner_r, center.y() - inner_r, inner_r * 2, inner_r * 2, start_angle + end_angle - 5, - (end_angle - 10))
-        
-        # Diagonal cut at the start
         outer_path.closeSubpath()
+
+        # Main Path
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(255, 255, 255))
         painter.drawPath(outer_path)
         painter.restore()
         
         # Circle 1 (inner)
-        painter.setPen(QPen(Qt.GlobalColor.white, 3))
+        painter.setPen(QPen(Qt.GlobalColor.white, 3 * S))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(center, radius, radius)
 
         # Draw "ANANYA" Text
-        font = QFont("Inter", 18) # Clean sans-serif
-        if not font.exactMatch(): font = QFont("Arial", 18) # Fallback
+        font_size = int(18 * S)
+        font = QFont("Inter", font_size) # Clean sans-serif
+        if not font.exactMatch(): font = QFont("Arial", font_size) # Fallback
         font.setBold(True)
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 6) # Futuristic spacing
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, int(6 * S)) # Futuristic spacing
         painter.setFont(font)
-        painter.setPen(Qt.GlobalColor.white)
         
         # Center text precisely
         metrics = painter.fontMetrics()
@@ -276,11 +378,12 @@ class OrcReactor(QWidget):
         text_width = metrics.horizontalAdvance(text)
         text_height = metrics.ascent()
         
-        painter.drawText(
-            int(center.x() - text_width / 2),
-            int(center.y() + text_height / 3), # Offset for vertical centering
-            text
-        )
+        tx = int(center.x() - text_width / 2)
+        ty = int(center.y() + text_height / 3)
+
+        # Main Text
+        painter.setPen(Qt.GlobalColor.white)
+        painter.drawText(tx, ty, text)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
