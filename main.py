@@ -50,6 +50,8 @@ class TerminalUI:
 
     def init_gui(self):
         self.dashboard = DashboardUI()
+        if self.on_text_command:
+            self.dashboard.chat_widget.command_entered.connect(self.on_text_command)
         self.dashboard.show()
 
     def set_state(self, state):
@@ -59,6 +61,11 @@ class TerminalUI:
 
     def write_log(self, msg):
         print(msg)
+        if self.dashboard:
+            from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
+            QMetaObject.invokeMethod(self.dashboard, "add_terminal_log", 
+                                   Qt.ConnectionType.QueuedConnection, 
+                                   Q_ARG(str, msg))
 
     def wait_for_api_key(self):
         pass
@@ -629,6 +636,8 @@ class AnanyaLive:
         self._is_speaking   = False
         self._speaking_lock = threading.Lock()
         self.ui.on_text_command = self._on_text_command
+        if self.ui.dashboard and hasattr(self.ui.dashboard, 'chat_widget'):
+            self.ui.dashboard.chat_widget.command_entered.connect(self._on_text_command)
         self._turn_done_event: asyncio.Event | None = None
         
         # Instantiate and start the Unreal Engine 5 network relay server
@@ -639,10 +648,7 @@ class AnanyaLive:
         if not self._loop or not self.session:
             return
         asyncio.run_coroutine_threadsafe(
-            self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
-                turn_complete=True
-            ),
+            self.session.send(input=text, end_of_turn=True),
             self._loop
         )
 
@@ -662,10 +668,7 @@ class AnanyaLive:
         if not self._loop or not self.session:
             return
         asyncio.run_coroutine_threadsafe(
-            self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
-                turn_complete=True
-            ),
+            self.session.send(input=text, end_of_turn=True),
             self._loop
         )
 

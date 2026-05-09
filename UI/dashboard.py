@@ -1,8 +1,10 @@
 import sys
 from PyQt6.QtWidgets import QMainWindow, QWidget
-from PyQt6.QtCore import Qt, QPoint, QRectF
+from PyQt6.QtCore import Qt, QPoint, QRectF, pyqtSlot
 from PyQt6.QtGui import QColor, QPainter, QLinearGradient, QBrush, QPen, QPainterPath
 from UI.orc_reactor import OrcReactor
+from UI.widget import ChatWidget
+from UI.button import TacticalDock
 
 class DashboardUI(QMainWindow):
     def __init__(self):
@@ -16,10 +18,23 @@ class DashboardUI(QMainWindow):
 
         # Initialize Orc Reactor
         self.reactor = OrcReactor(self)
-        self.center_reactor()
+        
+        # Initialize Chat Widget
+        self.chat_widget = ChatWidget(self)
+        self.chat_widget.resize(280, 400)
+        
+        # Initialize Tactical Dock
+        self.dock = TacticalDock(self)
+        
+        # Connect Signals
+        self.dock.chat_clicked.connect(self.chat_widget.toggle_visibility)
+        # Placeholder for main app connection
+        self.chat_widget.command_entered.connect(lambda cmd: print(f"Command received: {cmd}"))
+        
+        self.layout_components()
 
-    def center_reactor(self):
-        # Center the reactor in the window
+    def layout_components(self):
+        # 1. Center the reactor in the window
         if hasattr(self, 'reactor'):
             rect_width = self.reactor.width()
             rect_height = self.reactor.height()
@@ -27,10 +42,38 @@ class DashboardUI(QMainWindow):
                 int((self.width() - rect_width) / 2),
                 int((self.height() - rect_height) / 2)
             )
+        
+        # 2. Position Chat Widget at Bottom-Right
+        if hasattr(self, 'chat_widget'):
+            margin = 30
+            self.chat_widget.move(
+                self.width() - self.chat_widget.width() - margin,
+                self.height() - self.chat_widget.height() - margin
+            )
+
+        # 3. Position Tactical Dock at Bottom-Center
+        if hasattr(self, 'dock'):
+            bottom_margin = 10
+            self.dock.move(
+                int((self.width() - self.dock.width()) / 2),
+                int(self.height() - self.dock.height() - bottom_margin)
+            )
+
+    @pyqtSlot(str)
+    def add_terminal_log(self, msg):
+        if not hasattr(self, 'chat_widget') or not self.chat_widget:
+            return
+            
+        if msg.startswith("You: "):
+            self.chat_widget.add_log(f"$ {msg[5:]}", "command")
+        elif msg.startswith("Ananya: "):
+            self.chat_widget.add_log(f"> {msg[8:]}", "system")
+        else:
+            self.chat_widget.add_log(msg, "plain")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.center_reactor()
+        self.layout_components()
 
     def paintEvent(self, event):
         painter = QPainter(self)

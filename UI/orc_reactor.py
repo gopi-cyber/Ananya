@@ -45,17 +45,17 @@ class OrcReactor(QWidget):
         # --- Smooth Radius Transitions ---
         S = 0.7
         if self.status == "LISTENING":
-            self.target_c9_radius = (170 + 35) * S
+            self.target_c9_radius = (170 + 45) * S
         elif self.status in ["SPEAKING", "THINKING"]:
             self.target_c9_radius = 260 * S
         else: # IDLE
             self.target_c9_radius = 220 * S
             
-        lerp_speed = 0.08
+        lerp_speed = 0.04
         self.current_c9_radius += (self.target_c9_radius - self.current_c9_radius) * lerp_speed
 
         # Always increment pulse_phase for continuous breathing
-        self.pulse_phase += 0.08 if self.status != "SPEAKING" else 0.15
+        self.pulse_phase += 0.06 if self.status != "SPEAKING" else 0.12
             
         self.update()
 
@@ -77,8 +77,8 @@ class OrcReactor(QWidget):
         # --- Breathing effect (Ripple: Circle 3 to Circle 8) ---
         # "spread bigger" amplitude for C3, with propagation delay for others
         def get_pulse_radius(base_r, phase_delay, amp):
-            # Scale amplitude: full for SPEAKING, subtle for others
-            amp_scale = 1.0 if self.status == "SPEAKING" else 0.5
+            # Scale amplitude: full for SPEAKING, prominent for others
+            amp_scale = 1.0 if self.status == "SPEAKING" else 0.8
             return (base_r * S) + (math.sin(self.pulse_phase - phase_delay) * (amp * S * amp_scale))
 
         circle3_radius = get_pulse_radius(95, 0.0, 20) # Core: highest amplitude
