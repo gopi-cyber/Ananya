@@ -2,6 +2,7 @@ import sys
 from PyQt6.QtWidgets import QMainWindow, QWidget
 from PyQt6.QtCore import Qt, QPoint, QRectF
 from PyQt6.QtGui import QColor, QPainter, QLinearGradient, QBrush, QPen, QPainterPath
+from UI.orc_reactor import OrcReactor
 
 class DashboardUI(QMainWindow):
     def __init__(self):
@@ -12,6 +13,24 @@ class DashboardUI(QMainWindow):
         
         self.status = "IDLE"
         self.drag_pos = QPoint()
+
+        # Initialize Orc Reactor
+        self.reactor = OrcReactor(self)
+        self.center_reactor()
+
+    def center_reactor(self):
+        # Center the reactor in the window
+        if hasattr(self, 'reactor'):
+            rect_width = self.reactor.width()
+            rect_height = self.reactor.height()
+            self.reactor.move(
+                int((self.width() - rect_width) / 2),
+                int((self.height() - rect_height) / 2)
+            )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.center_reactor()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -71,7 +90,7 @@ class DashboardUI(QMainWindow):
         corner_pen = QPen(corner_color, 1.2)
         painter.setPen(corner_pen)
         
-        c_rad = 8   # Radius of the rounded curve
+        c_rad = 6
         offset = 10  # Offset from window edge
         bottom_offset = 20
         # Color for the curves (Light blue from the image)

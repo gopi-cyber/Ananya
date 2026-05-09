@@ -1,6 +1,14 @@
+# Ignore API keys and configuration
+config/api_keys.json
+config/*.json
+
+# Python
 __pycache__/
-*.pyc
-.vscode/
+*.py[cod]
+*$py.class
 venv/
-*.log
-.DS_Store
+.env
+
+# Qt
+*.pyc
+*.pyd
