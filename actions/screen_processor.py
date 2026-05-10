@@ -69,10 +69,22 @@ def _save_config_key(key: str, value) -> None:
 
 
 def _get_api_key() -> str:
-    key = _load_config().get("gemini_api_key", "")
-    if not key:
-        raise RuntimeError("gemini_api_key not found in config.")
-    return key
+    cfg = _load_config()
+    keys = cfg.get("gemini_api_keys", [])
+    
+    # Fallback for old config format
+    if not keys:
+        single_key = cfg.get("gemini_api_key", "")
+        if single_key:
+            return single_key
+            
+    if not keys:
+        raise RuntimeError("No Gemini API keys found in config/api_keys.json.")
+        
+    # Pick a random key from the list to distribute quota
+    import random
+    return random.choice(keys)
+
 
 
 def _get_os() -> str:

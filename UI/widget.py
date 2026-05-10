@@ -9,6 +9,7 @@ from PyQt6.QtGui import QColor, QPainter, QPen, QFont, QPainterPath, QLinearGrad
 
 class ChatWidget(QWidget):
     command_entered = pyqtSignal(str)
+    file_selected = pyqtSignal(str) # Path to the file
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -69,16 +70,55 @@ class ChatWidget(QWidget):
         
         # 5. Bottom Actions
         action_layout = QHBoxLayout()
-        self.img_btn = QLabel("[+ img]")
-        self.img_btn.setStyleSheet("color: #aaaaaa; font-family: monospace; font-size: 11px;")
+        self.img_btn = QPushButton("📎 Attach")
+        self.img_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.img_btn.setStyleSheet("""
+            QPushButton {
+                color: #aaaaaa; 
+                background: transparent;
+                border: 1px solid #333;
+                border-radius: 0px;
+                padding: 2px 8px;
+                font-family: monospace; 
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                color: #ffffff;
+                border-color: #0066ff;
+            }
+        """)
+        self.img_btn.clicked.connect(self.handle_attach)
         
-        self.send_btn = QLabel("[send \u21B5]")
-        self.send_btn.setStyleSheet("color: #aaaaaa; font-family: monospace; font-size: 11px;")
+        self.send_btn = QPushButton("[ SEND \u21B5 ]")
+        self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.send_btn.setMinimumWidth(80)
+        self.send_btn.setStyleSheet("""
+            QPushButton {
+                color: #00ffcc; 
+                background: rgba(0, 255, 204, 20);
+                border: 1px solid rgba(0, 255, 204, 50);
+                border-radius: 0px;
+                padding: 4px 10px;
+                font-family: monospace; 
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                color: #ffffff;
+                background: rgba(0, 255, 204, 40);
+                border-color: #00ffcc;
+            }
+            QPushButton:pressed {
+                background: rgba(0, 255, 204, 80);
+            }
+        """)
+        self.send_btn.clicked.connect(self.handle_input)
         
         action_layout.addWidget(self.img_btn)
         action_layout.addStretch()
         action_layout.addWidget(self.send_btn)
         self.main_layout.addLayout(action_layout)
+
         
         # Initial Content
         # (Clean slate or loaded from persistent history)
@@ -88,9 +128,11 @@ class ChatWidget(QWidget):
     def handle_input(self):
         text = self.input_field.text().strip()
         if text:
+            print(f"[UI] Input triggered: {text}")
             self.add_log(f"$ {text}", "command")
             self.command_entered.emit(text)
             self.input_field.clear()
+
 
     def toggle_visibility(self):
         if self.isVisible():
@@ -98,6 +140,17 @@ class ChatWidget(QWidget):
         else:
             self.show()
             self.input_field.setFocus()
+
+    def handle_attach(self):
+        from PyQt6.QtWidgets import QFileDialog
+        import os
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Attach File", "", 
+            "All Files (*);;Images (*.png *.jpg *.jpeg);;Documents (*.pdf *.txt *.docx *.py *.js *.html *.css *.json)"
+        )
+        if file_path:
+            self.file_selected.emit(file_path)
+            self.add_log(f"> Attached: {os.path.basename(file_path)}", "system")
 
     def add_log(self, text, style="plain"):
         if style == "command":
@@ -111,6 +164,8 @@ class ChatWidget(QWidget):
             content = f'<span style="color: #cccccc;">{text}</span>'
         
         self.log_area.append(f"{prefix}{content}<br>")
+        self.log_area.moveCursor(self.log_area.textCursor().MoveOperation.End)
+
         self.log_area.verticalScrollBar().setValue(self.log_area.verticalScrollBar().maximum())
 
     def paintEvent(self, event):
@@ -496,8 +551,8 @@ class SettingsWidget(QWidget):
         form_layout = QVBoxLayout(form_frame)
         form_layout.setSpacing(15)
         
-        # 1. Gemini API Key
-        self.gemini_input = self.create_input_group("GEMINI_API_KEY", "Enter API key...")
+        # 1. Gemini API Keys (Multi-line)
+        self.gemini_input = self.create_multi_input_group("GEMINI_API_KEYS (one per line)", "Paste multiple keys here...")
         form_layout.addLayout(self.gemini_input["layout"])
         
         # 2. Camera Index
@@ -519,7 +574,7 @@ class SettingsWidget(QWidget):
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #9D7CD8, stop:1 #6F4CBE);
                 border: 1px solid rgba(255, 255, 255, 0.3);
-                border-radius: 4px;
+                border-radius: 0px;
                 color: white;
                 font-family: 'Monospace';
                 font-weight: bold;
@@ -553,7 +608,7 @@ class SettingsWidget(QWidget):
             QLineEdit {
                 background: rgba(20, 20, 30, 0.6);
                 border: 1px solid rgba(157, 124, 216, 0.3);
-                border-radius: 4px;
+                border-radius: 0px;
                 padding: 8px;
                 color: #FFFFFF;
                 font-family: 'Monospace';
@@ -570,12 +625,48 @@ class SettingsWidget(QWidget):
         
         return {"layout": layout, "edit": edit}
 
+    def create_multi_input_group(self, label_text, placeholder):
+        layout = QVBoxLayout()
+        layout.setSpacing(5)
+        
+        label = QLabel(label_text)
+        label.setStyleSheet("color: #9D7CD8; font-family: 'Monospace'; font-size: 9px; font-weight: bold;")
+        
+        edit = QTextEdit()
+        edit.setPlaceholderText(placeholder)
+        edit.setFixedHeight(80)
+        edit.setStyleSheet("""
+            QTextEdit {
+                background: rgba(20, 20, 30, 0.6);
+                border: 1px solid rgba(157, 124, 216, 0.3);
+                border-radius: 0px;
+                padding: 8px;
+                color: #FFFFFF;
+                font-family: 'Consolas', 'Monospace';
+                font-size: 10px;
+            }
+            QTextEdit:focus {
+                border: 1px solid #9D7CD8;
+                background: rgba(30, 30, 45, 0.8);
+            }
+        """)
+        
+        layout.addWidget(label)
+        layout.addWidget(edit)
+        
+        return {"layout": layout, "edit": edit}
+
     def load_settings(self):
         try:
             if os.path.exists(self.config_path):
                 with open(self.config_path, 'r') as f:
                     data = json.load(f)
-                    self.gemini_input["edit"].setText(data.get("gemini_api_key", ""))
+                    # Support both old and new formats
+                    keys = data.get("gemini_api_keys", [])
+                    if not keys and "gemini_api_key" in data:
+                        keys = [data["gemini_api_key"]]
+                    
+                    self.gemini_input["edit"].setText("\n".join(keys))
                     self.camera_input["edit"].setText(str(data.get("camera_index", 0)))
                     self.voice_input["edit"].setText(data.get("voice_name", "Aoede"))
         except Exception as e:
@@ -588,9 +679,13 @@ class SettingsWidget(QWidget):
                 cam_idx = int(self.camera_input["edit"].text())
             except ValueError:
                 cam_idx = 0
+            
+            # Split keys by newline and clean up
+            raw_keys = self.gemini_input["edit"].toPlainText().split("\n")
+            clean_keys = [k.strip() for k in raw_keys if k.strip()]
                 
             data = {
-                "gemini_api_key": self.gemini_input["edit"].text().strip(),
+                "gemini_api_keys": clean_keys,
                 "camera_index": cam_idx,
                 "voice_name": self.voice_input["edit"].text().strip()
             }
@@ -601,7 +696,7 @@ class SettingsWidget(QWidget):
             with open(self.config_path, 'w') as f:
                 json.dump(data, f, indent=4)
             
-            print("[ANANYA] [OK] Settings saved to config/api_keys.json")
+            print(f"[ANANYA] [OK] Saved {len(clean_keys)} keys to config/api_keys.json")
             self.settings_saved.emit()
             
             # Visual feedback on button (briefly)
@@ -679,7 +774,7 @@ class CameraWidget(QWidget):
                 font-size: 14px;
                 background-color: rgba(0, 10, 20, 180);
                 border: 1px solid rgba(0, 255, 204, 50);
-                border-radius: 4px;
+                border-radius: 0px;
             }
         """)
         self.main_layout.addWidget(self.video_label)

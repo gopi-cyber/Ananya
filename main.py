@@ -105,9 +105,42 @@ SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
 
+class KeyManager:
+    def __init__(self, config_path):
+        self.config_path = config_path
+        self.keys = []
+        self.current_index = 0
+        self.load_keys()
+
+    def load_keys(self):
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                self.keys = config.get("gemini_api_keys", [])
+                if not self.keys and "gemini_api_key" in config:
+                    self.keys = [config["gemini_api_key"]]
+        except Exception as e:
+            print(f"[KeyManager] Error loading keys: {e}")
+            self.keys = []
+
+    def get_key(self) -> str:
+        if not self.keys:
+            self.load_keys()
+        if not self.keys:
+            return ""
+        return self.keys[self.current_index % len(self.keys)]
+
+    def rotate(self):
+        if len(self.keys) > 1:
+            self.current_index = (self.current_index + 1) % len(self.keys)
+            print(f"[KeyManager] 🔄 Rotating to key index {self.current_index}")
+            return True
+        return False
+
+key_manager = KeyManager(API_CONFIG_PATH)
+
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    return key_manager.get_key()
 
 def _get_voice_name() -> str:
     try:
@@ -664,6 +697,7 @@ class AnanyaLive:
         if self.ui.dashboard:
             if hasattr(self.ui.dashboard, 'chat_widget'):
                 self.ui.dashboard.chat_widget.command_entered.connect(self._on_text_command)
+                self.ui.dashboard.chat_widget.file_selected.connect(self._on_file_selected)
             if hasattr(self.ui.dashboard, 'memory_widget'):
                 self.ui.dashboard.memory_widget.command_entered.connect(self._on_text_command)
             # Initial memory and history load
@@ -680,11 +714,13 @@ class AnanyaLive:
         if not text or not text.strip():
             return
         if not self._loop or not self.session:
-            print("[ANANYA] ⚠️ Cannot send text: Session not active.")
+            err_msg = "SYS: Cannot send text: Session not active."
+            print(f"[ANANYA] ⚠️ {err_msg}")
+            self.ui.write_log(err_msg)
             return
         
         print(f"[ANANYA] 💬 Sending text command: {text}")
-        self.ui.write_log(f"You: {text}") # Log to UI immediately for feedback
+        self.ui.write_log(f"You: {text}") 
         self._last_user_text = text
         self._save_chat_history(f"You: {text}")
         
@@ -692,6 +728,56 @@ class AnanyaLive:
             self.session.send(input=text, end_of_turn=True),
             self._loop
         )
+
+
+    def _on_file_selected(self, file_path: str):
+        if not self._loop or not self.session:
+            print("[ANANYA] ⚠️ Cannot send file: Session not active.")
+            return
+
+        print(f"[ANANYA] 📂 Processing file: {file_path}")
+        asyncio.run_coroutine_threadsafe(self._process_file_upload(file_path), self._loop)
+
+    async def _process_file_upload(self, file_path: str):
+        import mimetypes
+        from pathlib import Path
+        
+        path = Path(file_path)
+        mime_type, _ = mimetypes.guess_type(file_path)
+        fname = path.name
+
+        try:
+            # 1. Handle Images
+            if mime_type and mime_type.startswith("image/"):
+                with open(file_path, "rb") as f:
+                    data = f.read()
+                await self.session.send(input=types.Blob(data=data, mime_type=mime_type), end_of_turn=False)
+                await self.session.send(input=f"I've uploaded an image: {fname}. Please analyze it.", end_of_turn=True)
+                print(f"[ANANYA] 🖼️ Sent image: {fname}")
+
+            # 2. Handle PDFs
+            elif mime_type == "application/pdf":
+                with open(file_path, "rb") as f:
+                    data = f.read()
+                await self.session.send(input=types.Blob(data=data, mime_type=mime_type), end_of_turn=False)
+                await self.session.send(input=f"I've uploaded a PDF: {fname}. Please read it.", end_of_turn=True)
+                print(f"[ANANYA] 📄 Sent PDF: {fname}")
+
+            # 3. Handle Text/Code Files
+            else:
+                try:
+                    content = path.read_text(encoding="utf-8", errors="ignore")
+                    # Send as a text block
+                    prompt = f" Sir, I've attached a file for you to review.\n\nFILE: {fname}\n---\n{content}\n---\nPlease acknowledge this file."
+                    await self.session.send(input=prompt, end_of_turn=True)
+                    print(f"[ANANYA] 📝 Sent text file: {fname}")
+                except Exception as e:
+                    print(f"[ANANYA] [ERR] Could not read file as text: {e}")
+
+        except Exception as e:
+            print(f"[ANANYA] [ERR] File upload failed: {e}")
+            self.ui.write_log(f"ERR: File upload failed: {str(e)[:50]}")
+
 
     def set_speaking(self, value: bool):
         with self._speaking_lock:
@@ -705,13 +791,21 @@ class AnanyaLive:
             self.ui.set_state("LISTENING")
             self.ue_relay.broadcast({"event": "state", "value": "LISTENING"})
 
-    def speak(self, text: str):
-        if not self._loop or not self.session:
+    def send_text(self, text):
+        """Sends text to the session with a small debounce/check to prevent spamming."""
+        if not self.session:
             return
-        asyncio.run_coroutine_threadsafe(
-            self.session.send(input=text, end_of_turn=True),
-            self._loop
-        )
+            
+        # If text is very short (like just 'hi'), we might want to wait a bit
+        # But for now, we just ensure it's sent in the active loop
+        asyncio.run_coroutine_threadsafe(self._debounced_send(text), self._loop)
+
+    async def _debounced_send(self, text):
+        if self.session:
+            try:
+                await self.session.send(text, end_of_turn=True)
+            except Exception as e:
+                print(f"[ANANYA] [ERR] Failed to send text: {e}")
 
     def speak_error(self, tool_name: str, error: str):
         short = str(error)[:120]
@@ -768,16 +862,32 @@ class AnanyaLive:
             f"Right now it is: {time_str}\n"
             f"Use this to calculate exact times for reminders.\n\n"
         )
+        
+        # Load recent chat history for context preservation
+        history_str = ""
+        try:
+            history_path = BASE_DIR / "memory" / "chat_history.json"
+            if history_path.exists():
+                history_data = json.loads(history_path.read_text(encoding="utf-8"))
+                history_str = "\n[RECENT CONVERSATION CONTEXT]\n"
+                for entry in history_data[-15:]: # Include last 15 messages
+                    history_str += f"{entry['text']}\n"
+                history_str += "\n[END CONTEXT]\n"
+        except Exception as e:
+            print(f"[Context] Error loading history: {e}")
 
         parts = [time_ctx]
+        if history_str:
+            parts.append(history_str)
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
 
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
-            output_audio_transcription=types.AudioTranscriptionConfig(),
-            input_audio_transcription=types.AudioTranscriptionConfig(),
+            # Disabling transcription configs to resolve 1008 "Operation not implemented" error
+            # output_audio_transcription=types.AudioTranscriptionConfig(),
+            # input_audio_transcription=types.AudioTranscriptionConfig(),
             system_instruction="\n".join(parts),
             tools=[{"function_declarations": TOOL_DECLARATIONS}],
             speech_config=types.SpeechConfig(
@@ -983,8 +1093,17 @@ class AnanyaLive:
         print("[ANANYA] [MIC] Mic started")
         loop = asyncio.get_event_loop()
 
-        def callback(indata, frames, time_info, status):
-            if not self.ui.muted:
+        def _mic_callback(indata, frames, time_info, status):
+            if status:
+                print(f"[ANANYA] [MIC] {status}")
+            
+            # Calculate peak volume to skip silent chunks
+            import numpy as np
+            volume_norm = np.linalg.norm(indata) * 10
+            
+            # Only send audio if there's actual sound (Threshold: 0.05)
+            # This saves significant API quota/tokens
+            if volume_norm > 0.05:
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(
                     self.out_queue.put_nowait,
@@ -997,7 +1116,7 @@ class AnanyaLive:
                 channels=CHANNELS,
                 dtype="int16",
                 blocksize=CHUNK_SIZE,
-                callback=callback,
+                callback=_mic_callback,
             ):
                 print("[ANANYA] [MIC] Mic stream open")
                 while True:
@@ -1190,13 +1309,19 @@ class AnanyaLive:
             print("[ANANYA] [PLAY] Playback stopped")
 
     async def run(self):
-        client = genai.Client(
-            api_key=_get_api_key(),
-            http_options={"api_version": "v1beta"}
-        )
-
         while True:
             try:
+                api_key = _get_api_key()
+                if not api_key:
+                    print("[ANANYA] [ERR] No API key found in config/api_keys.json")
+                    await asyncio.sleep(10)
+                    continue
+
+                client = genai.Client(
+                    api_key=api_key,
+                    http_options={"api_version": "v1beta"}
+                )
+
                 print("[ANANYA] [CONN] Connecting...")
                 self.ui.set_state("THINKING")
                 self.ue_relay.broadcast({"event": "state", "value": "THINKING"})
@@ -1224,6 +1349,9 @@ class AnanyaLive:
 
             except Exception as e:
                 print(f"[ANANYA] [ERR] {e}")
+                # Rotate key if there was a connection or rate limit error
+                if "429" in str(e) or "limit" in str(e).lower() or "connection" in str(e).lower() or "1008" in str(e):
+                    key_manager.rotate()
                 traceback.print_exc()
             self.set_speaking(False)
             self.ui.set_state("THINKING")

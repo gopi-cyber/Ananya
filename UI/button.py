@@ -8,14 +8,15 @@ class TacticalDock(QWidget):
     chat_clicked = pyqtSignal()
     memory_clicked = pyqtSignal()
     camera_clicked = pyqtSignal()
+    mini_clicked = pyqtSignal()
     settings_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(180, 32) # Expanded for 4 icons
+        self.setFixedSize(220, 32) # Expanded for 5 icons
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
-        self.icons = ["chat", "memory", "camera", "settings"]
+        self.icons = ["chat", "memory", "camera", "mini", "settings"]
         self.active_index = 0 
 
     def paintEvent(self, event):
@@ -25,7 +26,7 @@ class TacticalDock(QWidget):
         w = self.width()
         h = self.height()
         icon_size = 16
-        spacing = 40 # Increased spacing
+        spacing = 40 
         y_center = 12
         
         start_x = (w - (len(self.icons) * spacing)) // 2 + spacing // 2
@@ -49,7 +50,7 @@ class TacticalDock(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             x = event.position().x()
-            segment = self.width() / 4
+            segment = self.width() / 5
             if x < segment:
                 self.active_index = 0
                 self.chat_clicked.emit()
@@ -59,8 +60,11 @@ class TacticalDock(QWidget):
             elif x < segment * 3:
                 self.active_index = 2
                 self.camera_clicked.emit()
-            else:
+            elif x < segment * 4:
                 self.active_index = 3
+                self.mini_clicked.emit()
+            else:
+                self.active_index = 4
                 self.settings_clicked.emit()
             self.update()
 
@@ -75,26 +79,34 @@ class TacticalDock(QWidget):
         s = 6 # tiny icon half-size
         
         if icon_type == "core":
-            # Outer broken circle
-            painter.drawArc(QRectF(-s, -s, s*2, s*2), 45 * 16, 270 * 16)
-            # Inner circle
-            painter.drawEllipse(QRectF(-s/3, -s/3, (s/3)*2, (s/3)*2))
+            # Outer broken square
+            painter.drawPolyline([
+                QPointF(s*0.7, -s*0.7),
+                QPointF(-s, -s),
+                QPointF(-s, s),
+                QPointF(s*0.7, s*0.7)
+            ])
+            # Inner square
+            painter.drawRect(QRectF(-s/3, -s/3, (s/3)*2, (s/3)*2))
             # Dot in center
             painter.setBrush(color)
-            painter.drawEllipse(QPointF(0, 0), 1.5, 1.5)
+            painter.drawRect(QRectF(-0.75, -0.75, 1.5, 1.5))
+
             
         elif icon_type == "chat":
             path = QPainterPath()
-            path.addRoundedRect(QRectF(-s, -s+2, s*2, s*1.5), 3, 3)
+            path.addRect(QRectF(-s, -s+2, s*2, s*1.5))
             # Tail
             path.moveTo(-s+5, s-2)
             path.lineTo(-s+2, s+2)
             path.lineTo(-s+8, s-2)
             painter.drawPath(path)
+
             
         elif icon_type == "memory":
             # Stylized brain/chip icon
-            painter.drawRoundedRect(QRectF(-s, -s, s*2, s*2), 2, 2)
+            painter.drawRect(QRectF(-s, -s, s*2, s*2))
+
             painter.drawLine(int(-s), 0, int(s), 0)
             painter.drawLine(0, int(-s), 0, int(s))
             # Nodes
@@ -107,7 +119,8 @@ class TacticalDock(QWidget):
             
         elif icon_type == "camera":
             # Body
-            painter.drawRoundedRect(QRectF(-s, -s+4, s*1.4, s*1.2), 2, 2)
+            painter.drawRect(QRectF(-s, -s+4, s*1.4, s*1.2))
+
             # Lens
             path = QPainterPath()
             path.moveTo(s*0.5, -s+6)
@@ -116,6 +129,11 @@ class TacticalDock(QWidget):
             path.lineTo(s*0.5, s-2)
             path.closeSubpath()
             painter.drawPath(path)
+            
+        elif icon_type == "mini":
+            # Corner overlay icon
+            painter.drawRect(QRectF(-s, -s, s*2, s*2))
+            painter.drawRect(QRectF(s-3, s-3, 3, 3)) # inner small corner box
             
         elif icon_type == "settings":
             # Stylized gear/cogs
@@ -149,11 +167,12 @@ class TacticalDock(QWidget):
         painter.setBrush(color)
         
         # Left Dot
-        painter.drawEllipse(QPointF(x - 22, y), 1.5, 1.5)
-        # Center Pill
-        painter.drawRoundedRect(QRectF(x - 8, y - 1.5, 16, 3), 1.5, 1.5)
+        painter.drawRect(QRectF(x - 22 - 1, y - 1, 2, 2))
+        # Center Pill -> Bar
+        painter.drawRect(QRectF(x - 8, y - 1, 16, 2))
         # Right Dot
-        painter.drawEllipse(QPointF(x + 22, y), 1.5, 1.5)
+        painter.drawRect(QRectF(x + 22 - 1, y - 1, 2, 2))
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
