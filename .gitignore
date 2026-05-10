@@ -12,3 +12,7 @@ venv/
 # Qt
 *.pyc
 *.pyd
+
+# Project specific
+memory/
+scratch/

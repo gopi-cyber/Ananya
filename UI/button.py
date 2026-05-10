@@ -6,14 +6,16 @@ from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QPainterPath, QFont
 class TacticalDock(QWidget):
     # Signals
     chat_clicked = pyqtSignal()
+    memory_clicked = pyqtSignal()
     camera_clicked = pyqtSignal()
+    settings_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(160, 60) # Smaller width for 2 icons
+        self.setFixedSize(180, 32) # Expanded for 4 icons
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
-        self.icons = ["chat", "camera"]
+        self.icons = ["chat", "memory", "camera", "settings"]
         self.active_index = 0 
 
     def paintEvent(self, event):
@@ -22,9 +24,9 @@ class TacticalDock(QWidget):
         
         w = self.width()
         h = self.height()
-        icon_size = 24
-        spacing = 45
-        y_center = 25
+        icon_size = 16
+        spacing = 40 # Increased spacing
+        y_center = 12
         
         start_x = (w - (len(self.icons) * spacing)) // 2 + spacing // 2
         
@@ -41,19 +43,25 @@ class TacticalDock(QWidget):
             self.draw_tactical_icon(painter, x, y_center, icon_type, active=(i == self.active_index))
 
         # Draw Bottom Indicator (Dot - Pill - Dot)
-        indicator_y = y_center + 25
+        indicator_y = y_center + 18
         self.draw_indicator(painter, w // 2, indicator_y)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             x = event.position().x()
-            # Simple hit detection
-            if x < self.width() / 2:
+            segment = self.width() / 4
+            if x < segment:
                 self.active_index = 0
                 self.chat_clicked.emit()
-            else:
+            elif x < segment * 2:
                 self.active_index = 1
+                self.memory_clicked.emit()
+            elif x < segment * 3:
+                self.active_index = 2
                 self.camera_clicked.emit()
+            else:
+                self.active_index = 3
+                self.settings_clicked.emit()
             self.update()
 
     def draw_tactical_icon(self, painter, x, y, icon_type, active=False):
@@ -64,7 +72,7 @@ class TacticalDock(QWidget):
         painter.setPen(QPen(color, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         
-        s = 10 # icon half-size
+        s = 6 # tiny icon half-size
         
         if icon_type == "core":
             # Outer broken circle
@@ -84,6 +92,19 @@ class TacticalDock(QWidget):
             path.lineTo(-s+8, s-2)
             painter.drawPath(path)
             
+        elif icon_type == "memory":
+            # Stylized brain/chip icon
+            painter.drawRoundedRect(QRectF(-s, -s, s*2, s*2), 2, 2)
+            painter.drawLine(int(-s), 0, int(s), 0)
+            painter.drawLine(0, int(-s), 0, int(s))
+            # Nodes
+            painter.setBrush(color)
+            painter.drawEllipse(QPointF(-s, -s), 1.5, 1.5)
+            painter.drawEllipse(QPointF(s, -s), 1.5, 1.5)
+            painter.drawEllipse(QPointF(-s, s), 1.5, 1.5)
+            painter.drawEllipse(QPointF(s, s), 1.5, 1.5)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            
         elif icon_type == "camera":
             # Body
             painter.drawRoundedRect(QRectF(-s, -s+4, s*1.4, s*1.2), 2, 2)
@@ -96,6 +117,16 @@ class TacticalDock(QWidget):
             path.closeSubpath()
             painter.drawPath(path)
             
+        elif icon_type == "settings":
+            # Stylized gear/cogs
+            painter.drawEllipse(QPointF(0, 0), s-2, s-2)
+            # Teeth
+            for i in range(8):
+                painter.save()
+                painter.rotate(i * 45)
+                painter.drawLine(0, int(-s+2), 0, int(-s))
+                painter.restore()
+
         elif icon_type == "music":
             # Note head
             painter.setBrush(color)
@@ -118,11 +149,11 @@ class TacticalDock(QWidget):
         painter.setBrush(color)
         
         # Left Dot
-        painter.drawEllipse(QPointF(x - 25, y), 3, 3)
+        painter.drawEllipse(QPointF(x - 22, y), 1.5, 1.5)
         # Center Pill
-        painter.drawRoundedRect(QRectF(x - 10, y - 3, 20, 6), 3, 3)
+        painter.drawRoundedRect(QRectF(x - 8, y - 1.5, 16, 3), 1.5, 1.5)
         # Right Dot
-        painter.drawEllipse(QPointF(x + 25, y), 3, 3)
+        painter.drawEllipse(QPointF(x + 22, y), 1.5, 1.5)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

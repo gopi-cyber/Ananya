@@ -10,6 +10,7 @@ class OrcReactor(QWidget):
         self.setMinimumSize(400, 400)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
+        self.scale = 0.7
         # Animation setup
         self.rotation_angle = 0
         self.rotation_angle_3 = 0
@@ -24,8 +25,8 @@ class OrcReactor(QWidget):
         self.pulse_phase = 0
         
         # Smooth Animation Variables
-        self.current_c9_radius = 220 * 0.7 
-        self.target_c9_radius = 220 * 0.7
+        self.current_c9_radius = 220 * self.scale 
+        self.target_c9_radius = 220 * self.scale
         
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_animation)
@@ -43,7 +44,7 @@ class OrcReactor(QWidget):
         self.rotation_angle_10 += 0.3 # Very slow clockwise for Circle 10
         
         # --- Smooth Radius Transitions ---
-        S = 0.7
+        S = self.scale
         if self.status == "LISTENING":
             self.target_c9_radius = (170 + 45) * S
         elif self.status in ["SPEAKING", "THINKING"]:
@@ -63,6 +64,16 @@ class OrcReactor(QWidget):
         self.status = state
         self.update()
 
+    def mouseDoubleClickEvent(self, event):
+        # Find the DashboardUI and exit mini mode
+        p = self.parent()
+        while p:
+            if hasattr(p, 'set_mini_mode'):
+                p.set_mini_mode(False)
+                break
+            p = p.parent()
+        super().mouseDoubleClickEvent(event)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -70,7 +81,7 @@ class OrcReactor(QWidget):
         center = QPointF(self.width() / 2.0, self.height() / 2.0)
         
         # Global Scale Factor
-        S = 0.7
+        S = self.scale
         
         radius = 80 * S
         outer_radius = 85 * S

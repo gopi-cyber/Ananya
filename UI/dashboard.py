@@ -1,9 +1,9 @@
 import sys
 from PyQt6.QtWidgets import QMainWindow, QWidget
 from PyQt6.QtCore import Qt, QPoint, QRectF, pyqtSlot
-from PyQt6.QtGui import QColor, QPainter, QLinearGradient, QBrush, QPen, QPainterPath
+from PyQt6.QtGui import QColor, QPainter, QLinearGradient, QBrush, QPen, QPainterPath, QRegion
 from UI.orc_reactor import OrcReactor
-from UI.widget import ChatWidget
+from UI.widget import ChatWidget, MemoryWidget, SettingsWidget, CameraWidget
 from UI.button import TacticalDock
 
 class DashboardUI(QMainWindow):
@@ -15,23 +15,115 @@ class DashboardUI(QMainWindow):
         
         self.status = "IDLE"
         self.drag_pos = QPoint()
+        self.mini_mode = False
 
         # Initialize Orc Reactor
         self.reactor = OrcReactor(self)
         
-        # Initialize Chat Widget
+        # Initialize Widgets
         self.chat_widget = ChatWidget(self)
         self.chat_widget.resize(280, 400)
+        
+        self.memory_widget = MemoryWidget(self)
+        self.memory_widget.resize(450, 600)
+
+        self.settings_widget = SettingsWidget(self)
+        self.settings_widget.resize(350, 420)
+
+        self.camera_widget = CameraWidget(self)
+        self.camera_widget.resize(480, 360)
         
         # Initialize Tactical Dock
         self.dock = TacticalDock(self)
         
         # Connect Signals
         self.dock.chat_clicked.connect(self.chat_widget.toggle_visibility)
+        self.dock.memory_clicked.connect(self.memory_widget.toggle_visibility)
+        self.dock.settings_clicked.connect(self.settings_widget.toggle_visibility)
+        self.dock.camera_clicked.connect(self.camera_widget.toggle_visibility)
+        
         # Placeholder for main app connection
-        self.chat_widget.command_entered.connect(lambda cmd: print(f"Command received: {cmd}"))
+        self.chat_widget.command_entered.connect(self.handle_command)
         
         self.layout_components()
+
+    def set_mini_mode(self, enabled):
+        """Toggles between full tactical dashboard and mini-overlay mode."""
+        self.mini_mode = enabled
+        
+        if enabled:
+            # 1. Hide peripheral components
+            self.chat_widget.hide()
+            self.memory_widget.hide()
+            self.settings_widget.hide()
+            self.camera_widget.hide()
+            self.dock.hide()
+            
+            # 2. Scale down and reposition reactor
+            self.reactor.scale = 0.4
+            self.reactor.setMinimumSize(250, 250)
+            self.reactor.resize(250, 250)
+            margin = 10
+            # Move to bottom right
+            self.reactor.move(
+                self.width() - self.reactor.width() - margin,
+                self.height() - self.reactor.height() - margin
+            )
+            
+            # 3. Window Behavior
+            self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint)
+            # Apply circular mask so only the reactor area captures mouse events
+            mask_rect = self.reactor.geometry()
+            self.setMask(QRegion(mask_rect, QRegion.RegionType.Ellipse))
+            
+        else:
+            # 1. Restore Reactor
+            self.reactor.scale = 0.7
+            self.reactor.setMinimumSize(400, 400)
+            self.reactor.resize(400, 400)
+            
+            # 2. Clear mask and restore window flags
+            self.clearMask()
+            self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint)
+            
+            # 3. Show Dock (widgets stay hidden unless toggled)
+            self.dock.show()
+            self.layout_components()
+            
+        self.show() 
+        self.raise_()
+        self.activateWindow()
+        self.update()
+
+    def handle_command(self, cmd):
+        """Handles commands from the chat widget."""
+        cmd_lower = cmd.lower()
+        if "open" in cmd_lower:
+            # Extract app name (simple logic)
+            app_name = cmd_lower.split("open")[-1].strip()
+            if app_name:
+                self.launch_app(app_name)
+            else:
+                self.add_terminal_log("Ananya: Which application should I open?")
+        elif "dashboard" in cmd_lower or "full" in cmd_lower:
+            self.set_mini_mode(False)
+            self.add_terminal_log("Ananya: Restoring full tactical interface.")
+        elif "mini" in cmd_lower or "hide" in cmd_lower:
+            self.set_mini_mode(True)
+            self.add_terminal_log("Ananya: Switching to background overlay mode.")
+        else:
+            print(f"Command received: {cmd}")
+
+    def launch_app(self, app_name):
+        """Simulates opening an app and switches to mini mode."""
+        self.add_terminal_log(f"You: open {app_name}")
+        self.add_terminal_log(f"Ananya: Initializing {app_name.upper()} execution sequence. Switching to overlay.")
+        
+        # In a real implementation, you'd use something like:
+        # os.startfile(app_name) or a lookup table for paths
+        
+        # Trigger mini mode transition
+        self.set_mini_mode(True)
 
     def layout_components(self):
         # 1. Center the reactor in the window
@@ -43,20 +135,39 @@ class DashboardUI(QMainWindow):
                 int((self.height() - rect_height) / 2)
             )
         
-        # 2. Position Chat Widget at Bottom-Right
+        # 2. Position Widgets
+        margin = 30
         if hasattr(self, 'chat_widget'):
-            margin = 30
             self.chat_widget.move(
                 self.width() - self.chat_widget.width() - margin,
                 self.height() - self.chat_widget.height() - margin
             )
+        if hasattr(self, 'memory_widget'):
+            self.memory_widget.move(
+                margin,
+                self.height() - self.memory_widget.height() - margin
+            )
+        if hasattr(self, 'settings_widget'):
+            # Place settings in the middle-ish or near dock
+            self.settings_widget.move(
+                int((self.width() - self.settings_widget.width()) / 2),
+                int((self.height() - self.settings_widget.height()) / 2) - 50
+            )
+        if hasattr(self, 'camera_widget'):
+            # Place camera top-right
+            self.camera_widget.move(
+                self.width() - self.camera_widget.width() - margin,
+                margin
+            )
 
         # 3. Position Tactical Dock at Bottom-Center
         if hasattr(self, 'dock'):
-            bottom_margin = 10
+            # The bottom connecting line is at height - 20
+            # We place the dock slightly above it
+            dock_bottom_margin = 22 
             self.dock.move(
                 int((self.width() - self.dock.width()) / 2),
-                int(self.height() - self.dock.height() - bottom_margin)
+                int(self.height() - self.dock.height() - dock_bottom_margin)
             )
 
     @pyqtSlot(str)
@@ -64,6 +175,10 @@ class DashboardUI(QMainWindow):
         if not hasattr(self, 'chat_widget') or not self.chat_widget:
             return
             
+        # Detect app opening from backend to trigger mini-mode
+        if "[open_app]" in msg:
+            self.set_mini_mode(True)
+
         if msg.startswith("You: "):
             self.chat_widget.add_log(f"$ {msg[5:]}", "command")
         elif msg.startswith("Ananya: "):
@@ -71,11 +186,19 @@ class DashboardUI(QMainWindow):
         else:
             self.chat_widget.add_log(msg, "plain")
 
+    @pyqtSlot(dict)
+    def refresh_memory_ui(self, memory_dict):
+        if hasattr(self, 'memory_widget') and self.memory_widget:
+            self.memory_widget.refresh_memory(memory_dict)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.layout_components()
 
     def paintEvent(self, event):
+        if hasattr(self, 'mini_mode') and self.mini_mode:
+            return
+            
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -242,6 +365,19 @@ class DashboardUI(QMainWindow):
             self.move(self.pos() + event.globalPosition().toPoint() - self.drag_pos)
             self.drag_pos = event.globalPosition().toPoint()
             event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        """Returns to full mode on double click if in mini mode."""
+        if self.mini_mode:
+            self.set_mini_mode(False)
+        super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_M:
+            self.set_mini_mode(not self.mini_mode)
+        elif event.key() == Qt.Key.Key_Escape:
+            self.close()
+        super().keyPressEvent(event)
 
     def set_status(self, state):
         self.status = state

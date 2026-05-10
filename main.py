@@ -1,5 +1,7 @@
 import os
 os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
+os.environ["QT_LOGGING_RULES"] = "*.debug=false;qt.text.font.db.warning=false;qt.qpa.window.warning=false"
+os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
 import warnings
 warnings.filterwarnings("ignore")
 import asyncio
@@ -12,6 +14,8 @@ import socket
 import base64
 from pathlib import Path
 import queue
+import time
+from datetime import datetime
 
 import sounddevice as sd
 import numpy as np
@@ -52,6 +56,7 @@ class TerminalUI:
         self.dashboard = DashboardUI()
         if self.on_text_command:
             self.dashboard.chat_widget.command_entered.connect(self.on_text_command)
+            self.dashboard.memory_widget.command_entered.connect(self.on_text_command)
         self.dashboard.show()
 
     def set_state(self, state):
@@ -428,12 +433,32 @@ TOOL_DECLARATIONS = [
         }
     },
     {
+        "name": "control_ui_panel",
+        "description": "Control the visibility of various UI panels like Chat Widget, Dashboard HUD, etc.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "panel": {
+                    "type": "STRING",
+                    "description": "The panel to control. Options: 'chat_widget', 'dashboard_hud'.",
+                    "enum": ["chat_widget", "memory_widget", "dashboard_hud"]
+                },
+                "action": {
+                    "type": "STRING",
+                    "description": "The action to perform. Options: 'show', 'hide', 'toggle'.",
+                    "enum": ["show", "hide", "toggle"]
+                }
+            },
+            "required": ["panel", "action"]
+        }
+    },
+    {
         "name": "shutdown_ananya",
         "description": (
-            "Shuts down the assistant completely. "
-            "Call this when the user expresses intent to end the conversation, "
-            "close the assistant, say goodbye, or stop Ananya. "
-            "The user can say this in ANY language."
+            "DANGER: TERMINATES THE ENTIRE SESSION. "
+            "ONLY call this for explicit full exits like 'Goodbye Ananya', 'System Exit', or 'Shutdown'. "
+            "NEVER call this to close a window, widget, or panel. "
+            "For UI panels, use control_ui_panel."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -636,17 +661,33 @@ class AnanyaLive:
         self._is_speaking   = False
         self._speaking_lock = threading.Lock()
         self.ui.on_text_command = self._on_text_command
-        if self.ui.dashboard and hasattr(self.ui.dashboard, 'chat_widget'):
-            self.ui.dashboard.chat_widget.command_entered.connect(self._on_text_command)
+        if self.ui.dashboard:
+            if hasattr(self.ui.dashboard, 'chat_widget'):
+                self.ui.dashboard.chat_widget.command_entered.connect(self._on_text_command)
+            if hasattr(self.ui.dashboard, 'memory_widget'):
+                self.ui.dashboard.memory_widget.command_entered.connect(self._on_text_command)
+            # Initial memory and history load
+            self.refresh_memory_ui()
+            self._load_chat_history()
         self._turn_done_event: asyncio.Event | None = None
+        self._last_user_text = ""
         
         # Instantiate and start the Unreal Engine 5 network relay server
         self.ue_relay = UnrealEngineRelay(host="0.0.0.0", port=8080)
         self.ue_relay.start()
 
     def _on_text_command(self, text: str):
-        if not self._loop or not self.session:
+        if not text or not text.strip():
             return
+        if not self._loop or not self.session:
+            print("[ANANYA] ⚠️ Cannot send text: Session not active.")
+            return
+        
+        print(f"[ANANYA] 💬 Sending text command: {text}")
+        self.ui.write_log(f"You: {text}") # Log to UI immediately for feedback
+        self._last_user_text = text
+        self._save_chat_history(f"You: {text}")
+        
         asyncio.run_coroutine_threadsafe(
             self.session.send(input=text, end_of_turn=True),
             self._loop
@@ -676,6 +717,42 @@ class AnanyaLive:
         short = str(error)[:120]
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
+
+    def _save_chat_history(self, line: str):
+        try:
+            path = BASE_DIR / "memory" / "chat_history.json"
+            history = []
+            if path.exists():
+                history = json.loads(path.read_text(encoding="utf-8"))
+            history.append({"text": line, "time": datetime.now().isoformat()})
+            # Keep last 50 messages
+            history = history[-50:]
+            path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+        except Exception as e:
+            print(f"[History] Save error: {e}")
+
+    def _load_chat_history(self):
+        try:
+            path = BASE_DIR / "memory" / "chat_history.json"
+            if path.exists():
+                history = json.loads(path.read_text(encoding="utf-8"))
+                for item in history:
+                    msg = item.get("text", "")
+                    if msg and self.ui.dashboard:
+                        from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
+                        QMetaObject.invokeMethod(self.ui.dashboard, "add_terminal_log",
+                                               Qt.ConnectionType.QueuedConnection,
+                                               Q_ARG(str, msg))
+        except Exception as e:
+            print(f"[History] Load error: {e}")
+
+    def refresh_memory_ui(self):
+        if self.ui.dashboard:
+            memory = load_memory()
+            from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
+            QMetaObject.invokeMethod(self.ui.dashboard, "refresh_memory_ui",
+                                   Qt.ConnectionType.QueuedConnection,
+                                   Q_ARG(dict, memory))
 
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
@@ -727,6 +804,7 @@ class AnanyaLive:
             if key and value:
                 update_memory({category: {key: {"value": value}}})
                 print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
+                self.refresh_memory_ui()
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
                 self.ue_relay.broadcast({"event": "state", "value": "LISTENING"})
@@ -824,7 +902,52 @@ class AnanyaLive:
                 r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
                 result = r or "Done."
 
+            elif name == "control_ui_panel":
+                panel = args.get("panel")
+                action = args.get("action")
+                if panel == "chat_widget":
+                    if self.ui and self.ui.dashboard:
+                        if action == "show":
+                            self.ui.dashboard.chat_widget.show()
+                            self.ui.dashboard.chat_widget.input_field.setFocus()
+                        elif action == "hide":
+                            self.ui.dashboard.chat_widget.hide()
+                        elif action == "toggle":
+                            self.ui.dashboard.chat_widget.toggle_visibility()
+                        result = f"Chat Widget {action}ed."
+                    else:
+                        result = "UI not available."
+                elif panel == "memory_widget":
+                    if self.ui and self.ui.dashboard:
+                        if action == "show":
+                            self.ui.dashboard.memory_widget.show()
+                            self.ui.dashboard.memory_widget.input_field.setFocus()
+                        elif action == "hide":
+                            self.ui.dashboard.memory_widget.hide()
+                        elif action == "toggle":
+                            self.ui.dashboard.memory_widget.toggle_visibility()
+                        result = f"Memory Widget {action}ed."
+                    else:
+                        result = "UI not available."
+                elif panel == "dashboard_hud":
+                    result = "Dashboard HUD control not yet implemented."
+                else:
+                    result = f"Unknown panel: {panel}"
+
             elif name == "shutdown_ananya":
+                # SAFETY SHIELD: Check if this was a mistake
+                context = self._last_user_text.lower()
+                danger_words = ["close", "hide", "panel", "widget", "chat", "memory", "window"]
+                is_ui_request = any(w in context for w in danger_words)
+                
+                if is_ui_request:
+                    print(f"[ANANYA] 🛡️ SHUTDOWN SHIELD BLOCKED request. Context: '{context}'")
+                    self.ui.write_log("SYS: Shutdown blocked (UI context detected).")
+                    return types.FunctionResponse(
+                        id=fc.id, name=name,
+                        response={"result": "Shutdown blocked. Use control_ui_panel to manage widgets."}
+                    )
+
                 self.ui.write_log("SYS: Shutdown requested.")
                 self.speak("Goodbye!")
                 def _shutdown():
@@ -854,7 +977,7 @@ class AnanyaLive:
     async def _send_realtime(self):
         while True:
             msg = await self.out_queue.get()
-            await self.session.send_realtime_input(media=msg)
+            await self.session.send_realtime_input(audio=types.Blob(data=msg, mime_type='audio/pcm;rate=16000'))
 
     async def _listen_audio(self):
         print("[ANANYA] [MIC] Mic started")
@@ -865,7 +988,7 @@ class AnanyaLive:
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(
                     self.out_queue.put_nowait,
-                    {"data": data, "mime_type": "audio/pcm;rate=16000"}
+                    data
                 )
 
         try:
@@ -890,11 +1013,29 @@ class AnanyaLive:
         try:
             while True:
                 async for response in self.session.receive():
-
-                    if response.data:
-                        if self._turn_done_event and self._turn_done_event.is_set():
-                            self._turn_done_event.clear()
-                        self.audio_in_queue.put_nowait(response.data)
+                    # Handle model turn parts directly to avoid SDK warnings when multiple parts (like thoughts or text) exist.
+                    # response.data is a shortcut that can trigger warnings if multiple parts are present.
+                    if response.server_content and response.server_content.model_turn:
+                        for part in response.server_content.model_turn.parts:
+                            if part.inline_data:
+                                if self._turn_done_event and self._turn_done_event.is_set():
+                                    self._turn_done_event.clear()
+                                self.audio_in_queue.put_nowait(part.inline_data.data)
+                            
+                            if part.text:
+                                # If transcription is enabled, sc.output_transcription will handle the text.
+                                # Otherwise, we use the text part directly.
+                                if not response.server_content.output_transcription:
+                                    txt = _clean_transcript(part.text)
+                                    # Hard filter: if text starts with ** and ends with ** or looks like a reasoning header, skip it.
+                                    # Some models put reasoning in text even if thought field exists.
+                                    if txt and not (txt.startswith("**") and txt.count("**") >= 2 and len(txt) < 200):
+                                        out_buf.append(txt)
+                            
+                            if part.thought:
+                                # For thinking models, we can log thoughts or just ignore them for audio playback.
+                                # Currently we ignore them to avoid mixing thoughts into the spoken output.
+                                pass
 
                     if response.server_content:
                         sc = response.server_content
@@ -939,11 +1080,14 @@ class AnanyaLive:
                             full_in = " ".join(in_buf).strip()
                             if full_in:
                                 self.ui.write_log(f"You: {full_in}")
+                                self._last_user_text = full_in
+                                self._save_chat_history(f"You: {full_in}")
                             in_buf = []
 
                             full_out = " ".join(out_buf).strip()
                             if full_out:
                                 self.ui.write_log(f"Ananya: {full_out}")
+                                self._save_chat_history(f"Ananya: {full_out}")
                             out_buf = []
 
                     if response.tool_call:
