@@ -1,5 +1,5 @@
 import sys
-from PyQt6.QtWidgets import QMainWindow, QWidget
+from PyQt6.QtWidgets import QMainWindow, QWidget, QApplication
 from PyQt6.QtCore import Qt, QPoint, QRectF, pyqtSlot
 from PyQt6.QtGui import QColor, QPainter, QLinearGradient, QBrush, QPen, QPainterPath, QRegion
 from UI.orc_reactor import OrcReactor
@@ -148,10 +148,14 @@ class DashboardUI(QMainWindow):
                 int(self.height() - self.dock.height() - dock_bottom_margin)
             )
 
-    @pyqtSlot(str)
-    def add_terminal_log(self, msg):
+    @pyqtSlot(str, str)
+    def add_terminal_log(self, msg, style="plain"):
         """Routes logs to the ChatWidget as stylized bubbles."""
         if hasattr(self, 'chat_widget') and self.chat_widget:
+            if style == "streaming":
+                self.chat_widget.add_log(msg, "streaming")
+                return
+
             if msg.startswith("You: "):
                 text = msg[5:].strip()
                 self.chat_widget.add_log(text, "user")
@@ -162,7 +166,8 @@ class DashboardUI(QMainWindow):
                 text = msg[4:].strip()
                 self.chat_widget.add_log(text, "system")
             else:
-                self.chat_widget.add_log(msg, "plain")
+                self.chat_widget.add_log(msg, style)
+
 
 
     @pyqtSlot(dict)
@@ -218,46 +223,38 @@ class DashboardUI(QMainWindow):
         painter.setPen(glow_pen)
         painter.drawPath(notch_path)
 
-        # 4. Futuristic Curved Corner Brackets (Glowing & Reduced Size)
-        corner_pen = QPen(QColor("#00FFCC"), 1.8) # Cyan glow
+        # 4. Futuristic Curved Corner Brackets (Glowing & Purely Curved)
+        corner_pen = QPen(QColor("#00FFCC"), 2.2) # Cyan glow
         painter.setPen(corner_pen)
-        c_rad = 12
+        c_rad = 35 # Organic curve
         offset = 12
         
-        # Top-Left
+        # Top-Left Arc
         tl_path = QPainterPath()
-        tl_path.moveTo(offset, offset + 40)
-        tl_path.lineTo(offset, offset + c_rad)
-        tl_path.arcTo(QRectF(offset, offset, c_rad*2, c_rad*2), 180, -90)
-        tl_path.lineTo(offset + 40, offset)
+        tl_path.arcMoveTo(QRectF(offset, offset, c_rad*2, c_rad*2), 160)
+        tl_path.arcTo(QRectF(offset, offset, c_rad*2, c_rad*2), 160, -50)
         painter.drawPath(tl_path)
         
-        # Top-Right
+        # Top-Right Arc
         tr_path = QPainterPath()
-        tr_path.moveTo(w - offset - 40, offset)
-        tr_path.lineTo(w - offset - c_rad, offset)
-        tr_path.arcTo(QRectF(w - offset - c_rad*2, offset, c_rad*2, c_rad*2), 90, -90)
-        tr_path.lineTo(w - offset, offset + 40)
+        tr_path.arcMoveTo(QRectF(w - offset - c_rad*2, offset, c_rad*2, c_rad*2), 20)
+        tr_path.arcTo(QRectF(w - offset - c_rad*2, offset, c_rad*2, c_rad*2), 20, 50)
         painter.drawPath(tr_path)
         
-        # Bottom-Left
+        # Bottom-Left Arc
         bl_path = QPainterPath()
-        bl_path.moveTo(offset, h - offset - 40)
-        bl_path.lineTo(offset, h - offset - c_rad)
-        bl_path.arcTo(QRectF(offset, h - offset - c_rad*2, c_rad*2, c_rad*2), 180, 90)
-        bl_path.lineTo(offset + 40, h - offset)
+        bl_path.arcMoveTo(QRectF(offset, h - offset - c_rad*2, c_rad*2, c_rad*2), 200)
+        bl_path.arcTo(QRectF(offset, h - offset - c_rad*2, c_rad*2, c_rad*2), 200, 50)
         painter.drawPath(bl_path)
         
-        # Bottom-Right
+        # Bottom-Right Arc
         br_path = QPainterPath()
-        br_path.moveTo(w - offset - 40, h - offset)
-        br_path.lineTo(w - offset - c_rad, h - offset)
-        br_path.arcTo(QRectF(w - offset - c_rad*2, h - offset - c_rad*2, c_rad*2, c_rad*2), 270, 90)
-        br_path.lineTo(w - offset, h - offset - 40)
+        br_path.arcMoveTo(QRectF(w - offset - c_rad*2, h - offset - c_rad*2, c_rad*2, c_rad*2), 340)
+        br_path.arcTo(QRectF(w - offset - c_rad*2, h - offset - c_rad*2, c_rad*2, c_rad*2), 340, -50)
         painter.drawPath(br_path)
         
         # Add subtle outer glow to corners
-        glow_pen = QPen(QColor(0, 255, 204, 40), 5.0)
+        glow_pen = QPen(QColor(0, 255, 204, 60), 6.0)
         painter.setPen(glow_pen)
         painter.drawPath(tl_path)
         painter.drawPath(tr_path)
@@ -266,16 +263,18 @@ class DashboardUI(QMainWindow):
 
 
         # 5. Connecting Lines between corners
-        gap = 4
-        connect_pen = QPen(QColor("#222222"), 1.5)
+        gap = 10
+        connect_pen = QPen(QColor("#1A1A1A"), 1.2)
         painter.setPen(connect_pen)
 
+        # Fix: Using 'offset' instead of undefined 'b_offset'
         # Left side connecting line
-        painter.drawLine(offset, offset + c_rad + gap, offset, h - b_offset - c_rad - gap)
+        painter.drawLine(offset, offset + c_rad + gap, offset, h - offset - c_rad - gap)
         # Right side connecting line
-        painter.drawLine(w - offset, offset + c_rad + gap, w - offset, h - b_offset - c_rad - gap)
+        painter.drawLine(w - offset, offset + c_rad + gap, w - offset, h - offset - c_rad - gap)
         # Bottom side connecting line
-        painter.drawLine(offset + c_rad + gap, h - b_offset, w - offset - c_rad - gap, h - b_offset)
+        painter.drawLine(offset + c_rad + gap, h - offset, w - offset - c_rad - gap, h - offset)
+
 
 
 

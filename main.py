@@ -44,6 +44,9 @@ from actions.game_updater      import game_updater
 from PyQt6.QtWidgets import QApplication
 from UI.dashboard import DashboardUI
 
+# Configuration Paths
+
+
 class TerminalUI:
     def __init__(self):
         self.muted = False
@@ -66,13 +69,15 @@ class TerminalUI:
         if self.dashboard:
             self.dashboard.set_status(state)
 
-    def write_log(self, msg):
+    def write_log(self, msg, style="plain"):
         print(msg)
         if self.dashboard:
             from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
             QMetaObject.invokeMethod(self.dashboard, "add_terminal_log", 
                                    Qt.ConnectionType.QueuedConnection, 
-                                   Q_ARG(str, msg))
+                                   Q_ARG(str, msg),
+                                   Q_ARG(str, style))
+
 
     def wait_for_api_key(self):
         pass
@@ -741,9 +746,11 @@ class AnanyaLive:
         self._turn_done_event: asyncio.Event | None = None
         self._last_user_text = ""
         
-        # Instantiate and start the Unreal Engine 5 network relay server
         self.ue_relay = UnrealEngineRelay(host="0.0.0.0", port=8080)
         self.ue_relay.start()
+        
+        self.turn_started = False # For chat streaming
+
 
     def _on_text_command(self, text: str):
         if not text or not text.strip():
@@ -1197,7 +1204,9 @@ class AnanyaLive:
 
         try:
             while True:
+                self.turn_started = True # Start of a new model turn
                 async for response in self.session.receive():
+
                     # Handle model turn parts directly to avoid SDK warnings when multiple parts (like thoughts or text) exist.
                     # response.data is a shortcut that can trigger warnings if multiple parts are present.
                     if response.server_content and response.server_content.model_turn:
@@ -1216,6 +1225,13 @@ class AnanyaLive:
                                     # Some models put reasoning in text even if thought field exists.
                                     if txt and not (txt.startswith("**") and txt.count("**") >= 2 and len(txt) < 200):
                                         out_buf.append(txt)
+                                        # Stream to UI
+                                        if self.turn_started:
+                                            self.ui.write_log(txt, "ai")
+                                            self.turn_started = False
+                                        else:
+                                            self.ui.write_log(txt, "streaming")
+
                             
                             if part.thought:
                                 # For thinking models, we can log thoughts or just ignore them for audio playback.

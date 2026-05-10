@@ -12,6 +12,8 @@ class ChatMessage(QFrame):
         super().__init__(parent)
         self.sender = sender
         self.text = text
+        self.label = None # Will be initialized in __init__
+
         
         layout = QVBoxLayout(self)
 
@@ -79,6 +81,13 @@ class ChatMessage(QFrame):
         
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
 
+    def append_text(self, text):
+        self.text += text
+        self.label.setText(self.text)
+        self.label.adjustSize()
+        self.updateGeometry()
+
+
 
 class ChatWidget(QWidget):
 
@@ -89,7 +98,9 @@ class ChatWidget(QWidget):
         super().__init__(parent)
         self.setMinimumSize(320, 450)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.last_ai_message = None # For streaming support
         self.hide()
+
         
         # Main Layout
         self.main_layout = QVBoxLayout(self)
@@ -232,12 +243,22 @@ class ChatWidget(QWidget):
         sender = "system"
         if style in ["user", "command"]:
             sender = "user"
+            self.last_ai_message = None # Interrupt streaming on user input
         elif style == "system" or "Ananya:" in text:
             sender = "ai"
             text = text.replace("Ananya: ", "")
-        
+        elif style == "streaming":
+            sender = "ai"
+
+        # Support streaming updates
+        if sender == "ai" and self.last_ai_message and style == "streaming":
+            self.last_ai_message.append_text(text)
+            return
+
         # Create message widget
         msg_widget = ChatMessage(text, sender)
+        if sender == "ai":
+            self.last_ai_message = msg_widget
         
         # Layout for alignment
         align_layout = QHBoxLayout()
@@ -254,7 +275,9 @@ class ChatWidget(QWidget):
         else:
             align_layout.addStretch()
             align_layout.addWidget(msg_widget)
+            align_layout.setContentsMargins(10, 0, 10, 0)
             align_layout.addStretch()
+
             
         # Insert before the stretch at the end
         self.msg_layout.insertLayout(self.msg_layout.count() - 1, align_layout)
