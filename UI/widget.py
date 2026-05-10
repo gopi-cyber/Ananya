@@ -197,9 +197,9 @@ class ChatWidget(QWidget):
         """)
         self.attach_btn.clicked.connect(self.handle_attach)
         self.main_layout.addWidget(self.attach_btn)
-())
 
     def handle_input(self):
+
         text = self.input_field.text().strip()
         if text:
             print(f"[UI] Input triggered: {text}")
