@@ -61,39 +61,52 @@ class DashboardUI(QMainWindow):
         self.hide() # Crucial for Windows to apply flag changes
         
         if enabled:
+            # Hide all UI except the core reactor
             self.chat_widget.hide()
             self.memory_widget.hide()
             self.settings_widget.hide()
             self.camera_widget.hide()
             self.dock.hide()
             
-            self.reactor.scale = 0.4
-            self.reactor.setMinimumSize(250, 250)
-            self.reactor.resize(250, 250)
+            # Shrink Reactor
+            self.reactor.scale = 0.5
+            self.reactor.setFixedSize(200, 200)
             
-            margin = 10
-            self.reactor.move(
-                self.width() - self.reactor.width() - margin,
-                self.height() - self.reactor.height() - margin
+            # Change Window Flags for overlay
+            self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
+            
+            # Resize and move the window to bottom-right
+            screen = QApplication.primaryScreen().geometry()
+            size = 220
+            self.setGeometry(
+                screen.width() - size - 20,
+                screen.height() - size - 60, # Above taskbar
+                size, size
             )
             
-            self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
-            mask_rect = self.reactor.geometry()
-            self.setMask(QRegion(mask_rect, QRegion.RegionType.Ellipse))
-            self.show()
+            # Center reactor in the now-small window
+            self.reactor.move(10, 10)
+            
+            # Set circular mask
+            self.setMask(QRegion(0, 0, size, size, QRegion.RegionType.Ellipse))
         else:
             self.clearMask()
             self.reactor.scale = 0.7
-            self.reactor.setMinimumSize(400, 400)
-            self.reactor.resize(400, 400)
+            self.reactor.setFixedSize(400, 400)
+            
+            # Restore main window flags
             self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+            
+            # Show components
             self.dock.show()
             self.layout_components()
             self.showMaximized()
             
+        self.show()
         self.raise_()
         self.activateWindow()
         self.update()
+
 
     def handle_command(self, cmd):
         """Standard command handler for dashboard buttons."""
@@ -136,13 +149,20 @@ class DashboardUI(QMainWindow):
 
     @pyqtSlot(str)
     def add_terminal_log(self, msg):
+        """Routes logs to the ChatWidget as stylized bubbles."""
         if hasattr(self, 'chat_widget') and self.chat_widget:
             if msg.startswith("You: "):
-                self.chat_widget.add_log(f"$ {msg[5:]}", "command")
+                text = msg[5:].strip()
+                self.chat_widget.add_log(text, "user")
             elif msg.startswith("Ananya: "):
-                self.chat_widget.add_log(f"> {msg[8:]}", "system")
+                text = msg[8:].strip()
+                self.chat_widget.add_log(text, "ai")
+            elif msg.startswith("SYS:"):
+                text = msg[4:].strip()
+                self.chat_widget.add_log(text, "system")
             else:
                 self.chat_widget.add_log(msg, "plain")
+
 
     @pyqtSlot(dict)
     def refresh_memory_ui(self, memory_dict):

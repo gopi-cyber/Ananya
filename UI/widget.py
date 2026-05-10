@@ -4,134 +4,209 @@ import json
 import os
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QTextEdit, QFrame, QScrollArea, QSizePolicy, QPushButton)
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QTimer, QPoint
-from PyQt6.QtGui import QColor, QPainter, QPen, QFont, QPainterPath, QLinearGradient, QBrush, QImage, QPixmap
+from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QTimer, QPoint, QSize
+from PyQt6.QtGui import QColor, QPainter, QPen, QFont, QPainterPath, QLinearGradient, QBrush, QImage, QPixmap, QFontMetrics
+
+class ChatMessage(QFrame):
+    def __init__(self, text, sender="user", parent=None):
+        super().__init__(parent)
+        self.sender = sender
+        self.text = text
+        
+        layout = QVBoxLayout(self)
+
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(4)
+        
+        # Sender Label
+        sender_label = QLabel("YOU" if sender == "user" else "ANANYA")
+        sender_label.setStyleSheet(f"""
+            color: {'#0066ff' if sender == 'user' else '#00ffcc'};
+            font-size: 9px;
+            font-weight: bold;
+            font-family: 'Segoe UI', sans-serif;
+            letter-spacing: 1px;
+        """)
+        if sender == "user":
+            sender_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        else:
+            sender_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            
+        layout.addWidget(sender_label)
+        
+        # Content Bubble
+        self.content_frame = QFrame()
+        bubble_layout = QVBoxLayout(self.content_frame)
+        bubble_layout.setContentsMargins(12, 10, 12, 10)
+        
+        self.label = QLabel(text)
+        self.label.setWordWrap(True)
+        self.label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        
+        font = QFont("Segoe UI", 10)
+        self.label.setFont(font)
+        
+        if sender == "user":
+            self.label.setStyleSheet("color: #ffffff;")
+            self.content_frame.setStyleSheet("""
+                QFrame {
+                    background-color: rgba(0, 102, 255, 30);
+                    border: 1px solid rgba(0, 102, 255, 60);
+                    border-top-left-radius: 16px;
+                    border-top-right-radius: 4px;
+                    border-bottom-left-radius: 16px;
+                    border-bottom-right-radius: 16px;
+                }
+            """)
+        elif sender == "ai":
+            self.label.setStyleSheet("color: #e0e0e0;")
+            self.content_frame.setStyleSheet("""
+                QFrame {
+                    background-color: rgba(255, 255, 255, 8);
+                    border: 1px solid rgba(255, 255, 255, 15);
+                    border-top-left-radius: 4px;
+                    border-top-right-radius: 16px;
+                    border-bottom-left-radius: 16px;
+                    border-bottom-right-radius: 16px;
+                }
+            """)
+        else: # System
+            self.label.setStyleSheet("color: #888888; font-style: italic;")
+            self.content_frame.setStyleSheet("background: transparent; border: none;")
+            
+        bubble_layout.addWidget(self.label)
+        layout.addWidget(self.content_frame)
+        
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+
 
 class ChatWidget(QWidget):
+
     command_entered = pyqtSignal(str)
     file_selected = pyqtSignal(str) # Path to the file
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(280, 380)
+        self.setMinimumSize(320, 450)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.hide() # Hidden by default
+        self.hide()
         
         # Main Layout
         self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(15, 35, 15, 15) # Leave space for the top tab
+        self.main_layout.setContentsMargins(15, 35, 15, 15)
         self.main_layout.setSpacing(10)
         
-        # 1. Header Area (Implicitly handled by paintEvent for the tab)
+        # 1. Message Area (Scrollable)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setStyleSheet("background: transparent;")
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         
-        # 2. Log Area
-        self.log_area = QTextEdit()
-        self.log_area.setReadOnly(True)
-        self.log_area.setFrameStyle(QFrame.Shape.NoFrame)
-        self.log_area.setStyleSheet("""
-            QTextEdit {
-                background-color: transparent;
-                color: white;
-                font-family: 'Consolas', 'Courier New', monospace;
-                font-size: 13px;
-                line-height: 1.4;
+        # Custom ScrollBar Styling
+        self.scroll_area.verticalScrollBar().setStyleSheet("""
+            QScrollBar:vertical {
+                border: none;
+                background: transparent;
+                width: 4px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(255, 255, 255, 20);
+                min-height: 20px;
+                border-radius: 2px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
             }
         """)
-        self.main_layout.addWidget(self.log_area)
         
-        # 3. Separator Line
+        self.msg_container = QWidget()
+        self.msg_container.setStyleSheet("background: transparent;")
+        self.msg_layout = QVBoxLayout(self.msg_container)
+        self.msg_layout.setContentsMargins(5, 5, 5, 5)
+        self.msg_layout.setSpacing(15)
+        self.msg_layout.addStretch() # Push messages to top
+        
+        self.scroll_area.setWidget(self.msg_container)
+        self.main_layout.addWidget(self.scroll_area)
+        
+        # 2. Separator Line
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet("background-color: rgba(0, 102, 255, 100); height: 1px;")
+        line.setFixedHeight(1)
+        line.setStyleSheet("background-color: rgba(0, 102, 255, 40);")
         self.main_layout.addWidget(line)
         
-        # 4. Input Area
-        input_container = QHBoxLayout()
-        self.prompt_label = QLabel("> ")
-        self.prompt_label.setStyleSheet("color: white; font-weight: bold; font-family: monospace;")
+        # 3. Input Area (Pill shaped)
+        input_wrapper = QFrame()
+        input_wrapper.setStyleSheet("""
+            QFrame {
+                background-color: rgba(255, 255, 255, 5);
+                border: 1px solid rgba(255, 255, 255, 10);
+                border-radius: 20px;
+            }
+        """)
+        input_layout = QHBoxLayout(input_wrapper)
+        input_layout.setContentsMargins(15, 5, 10, 5)
         
         self.input_field = QLineEdit()
-        self.input_field.setPlaceholderText("enter message...")
+        self.input_field.setPlaceholderText("Ask Ananya anything...")
         self.input_field.setFrame(False)
-        self.input_field.setStyleSheet("""
-            QLineEdit {
-                background-color: transparent;
-                color: white;
-                font-family: 'Consolas', monospace;
-                font-size: 14px;
-            }
-        """)
-        input_container.addWidget(self.prompt_label)
-        input_container.addWidget(self.input_field)
-        self.main_layout.addLayout(input_container)
+        self.input_field.setStyleSheet("background: transparent; color: white; font-size: 13px; padding: 5px 0;")
         
-        # Connect Input
-        self.input_field.returnPressed.connect(self.handle_input)
-        
-        # 5. Bottom Actions
-        action_layout = QHBoxLayout()
-        self.img_btn = QPushButton("📎 Attach")
-        self.img_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.img_btn.setStyleSheet("""
-            QPushButton {
-                color: #aaaaaa; 
-                background: transparent;
-                border: 1px solid #333;
-                border-radius: 0px;
-                padding: 2px 8px;
-                font-family: monospace; 
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                color: #ffffff;
-                border-color: #0066ff;
-            }
-        """)
-        self.img_btn.clicked.connect(self.handle_attach)
-        
-        self.send_btn = QPushButton("[ SEND \u21B5 ]")
+        self.send_btn = QPushButton("\u21B5") # Enter symbol
+        self.send_btn.setFixedSize(28, 28)
         self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.send_btn.setMinimumWidth(80)
         self.send_btn.setStyleSheet("""
             QPushButton {
-                color: #00ffcc; 
-                background: rgba(0, 255, 204, 20);
-                border: 1px solid rgba(0, 255, 204, 50);
-                border-radius: 0px;
-                padding: 4px 10px;
-                font-family: monospace; 
-                font-size: 11px;
+                background-color: #0066ff;
+                color: white;
+                border-radius: 14px;
                 font-weight: bold;
+                font-size: 16px;
+                border: none;
             }
             QPushButton:hover {
-                color: #ffffff;
-                background: rgba(0, 255, 204, 40);
-                border-color: #00ffcc;
-            }
-            QPushButton:pressed {
-                background: rgba(0, 255, 204, 80);
+                background-color: #0052cc;
             }
         """)
+        
+        input_layout.addWidget(self.input_field)
+        input_layout.addWidget(self.send_btn)
+        self.main_layout.addWidget(input_wrapper)
+        
+        # Connect Signals
+        self.input_field.returnPressed.connect(self.handle_input)
         self.send_btn.clicked.connect(self.handle_input)
         
-        action_layout.addWidget(self.img_btn)
-        action_layout.addStretch()
-        action_layout.addWidget(self.send_btn)
-        self.main_layout.addLayout(action_layout)
-
-        
-        # Initial Content
-        # (Clean slate or loaded from persistent history)
-
-        self.log_area.verticalScrollBar().setValue(self.log_area.verticalScrollBar().maximum())
+        # 4. Attachment Button
+        self.attach_btn = QPushButton("\ud83d\udcce Attach File")
+        self.attach_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.attach_btn.setStyleSheet("""
+            QPushButton {
+                color: #888888;
+                background: transparent;
+                border: none;
+                font-size: 10px;
+                text-align: left;
+                padding-left: 10px;
+            }
+            QPushButton:hover { color: #ffffff; }
+        """)
+        self.attach_btn.clicked.connect(self.handle_attach)
+        self.main_layout.addWidget(self.attach_btn)
+())
 
     def handle_input(self):
         text = self.input_field.text().strip()
         if text:
             print(f"[UI] Input triggered: {text}")
-            self.add_log(f"$ {text}", "command")
+            self.add_log(text, "user") # Use 'user' style
             self.command_entered.emit(text)
             self.input_field.clear()
+
 
 
     def toggle_visibility(self):
@@ -153,20 +228,44 @@ class ChatWidget(QWidget):
             self.add_log(f"> Attached: {os.path.basename(file_path)}", "system")
 
     def add_log(self, text, style="plain"):
-        if style == "command":
-            prefix = '<span style="color: #569cd6; font-weight: bold;">$ </span>'
-            content = f'<span style="color: #ffffff;">{text.replace("$ ", "")}</span>'
-        elif style == "system":
-            prefix = '<span style="color: #4ec9b0; font-weight: bold;">> </span>'
-            content = f'<span style="color: #ce9178;">{text.replace("> ", "")}</span>'
-        else:
-            prefix = '<span style="color: #888888;"># </span>'
-            content = f'<span style="color: #cccccc;">{text}</span>'
+        # Map styles to senders
+        sender = "system"
+        if style in ["user", "command"]:
+            sender = "user"
+        elif style == "system" or "Ananya:" in text:
+            sender = "ai"
+            text = text.replace("Ananya: ", "")
         
-        self.log_area.append(f"{prefix}{content}<br>")
-        self.log_area.moveCursor(self.log_area.textCursor().MoveOperation.End)
+        # Create message widget
+        msg_widget = ChatMessage(text, sender)
+        
+        # Layout for alignment
+        align_layout = QHBoxLayout()
+        align_layout.setContentsMargins(0, 0, 0, 0)
+        
+        if sender == "user":
+            align_layout.addStretch()
+            align_layout.addWidget(msg_widget)
+            align_layout.setContentsMargins(40, 0, 0, 0) # Left padding for user
+        elif sender == "ai":
+            align_layout.addWidget(msg_widget)
+            align_layout.addStretch()
+            align_layout.setContentsMargins(0, 0, 40, 0) # Right padding for AI
+        else:
+            align_layout.addStretch()
+            align_layout.addWidget(msg_widget)
+            align_layout.addStretch()
+            
+        # Insert before the stretch at the end
+        self.msg_layout.insertLayout(self.msg_layout.count() - 1, align_layout)
+        
+        # Auto-scroll
+        QTimer.singleShot(100, self.scroll_to_bottom)
 
-        self.log_area.verticalScrollBar().setValue(self.log_area.verticalScrollBar().maximum())
+    def scroll_to_bottom(self):
+        bar = self.scroll_area.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
 
     def paintEvent(self, event):
         painter = QPainter(self)
