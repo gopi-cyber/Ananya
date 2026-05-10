@@ -49,9 +49,10 @@ class DashboardUI(QMainWindow):
         self.showMaximized()
 
     def get_tactical_path(self, w, h):
-        """Returns the full rectangular path for the tactical HUD."""
+        """Returns a premium rounded rectangular path for the tactical HUD."""
         path = QPainterPath()
-        path.addRect(0, 0, w, h)
+        radius = 24
+        path.addRoundedRect(QRectF(0, 0, w, h), radius, radius)
         return path
 
 
@@ -197,9 +198,9 @@ class DashboardUI(QMainWindow):
         # CLIP to prevent any leakage
         painter.setClipPath(path)
 
-        # 3. Top Center Notch
-        accent_color = QColor("#AAAAAA") 
-        w_notch, w_side, slope, y_base, y_drop = 250, 30, 10, 5, 10
+        # 3. Top Center Notch (Redesigned for Premium Look)
+        accent_color = QColor("#0066FF") 
+        w_notch, w_side, slope, y_base, y_drop = 300, 40, 15, 0, 12
         x_start = (w - w_notch) // 2
         notch_path = QPainterPath()
         notch_path.moveTo(x_start, y_base)
@@ -208,39 +209,59 @@ class DashboardUI(QMainWindow):
         notch_path.lineTo(x_start + w_notch - w_side - slope, y_drop)
         notch_path.lineTo(x_start + w_notch - w_side, y_base)
         notch_path.lineTo(x_start + w_notch, y_base)
-        painter.setPen(QPen(accent_color, 1.2))
+        
+        painter.setPen(QPen(accent_color, 2.0))
+        painter.drawPath(notch_path)
+        
+        # Inner glow for notch
+        glow_pen = QPen(QColor(0, 102, 255, 60), 4.0)
+        painter.setPen(glow_pen)
         painter.drawPath(notch_path)
 
-        # 4. Futuristic Curved Corner Brackets
-        corner_pen = QPen(QColor("#FFFFFF"), 1.2)
+        # 4. Futuristic Curved Corner Brackets (Glowing & Reduced Size)
+        corner_pen = QPen(QColor("#00FFCC"), 1.8) # Cyan glow
         painter.setPen(corner_pen)
-        c_rad = 8
-        offset = 10
-        b_offset = 20
-
+        c_rad = 12
+        offset = 12
         
         # Top-Left
         tl_path = QPainterPath()
-        tl_path.arcMoveTo(QRectF(offset, offset, c_rad*2, c_rad*2), 180)
+        tl_path.moveTo(offset, offset + 40)
+        tl_path.lineTo(offset, offset + c_rad)
         tl_path.arcTo(QRectF(offset, offset, c_rad*2, c_rad*2), 180, -90)
+        tl_path.lineTo(offset + 40, offset)
         painter.drawPath(tl_path)
         
         # Top-Right
         tr_path = QPainterPath()
-        tr_path.arcMoveTo(QRectF(w - offset - c_rad*2, offset, c_rad*2, c_rad*2), 0)
-        tr_path.arcTo(QRectF(w - offset - c_rad*2, offset, c_rad*2, c_rad*2), 0, 90)
+        tr_path.moveTo(w - offset - 40, offset)
+        tr_path.lineTo(w - offset - c_rad, offset)
+        tr_path.arcTo(QRectF(w - offset - c_rad*2, offset, c_rad*2, c_rad*2), 90, -90)
+        tr_path.lineTo(w - offset, offset + 40)
         painter.drawPath(tr_path)
         
         # Bottom-Left
         bl_path = QPainterPath()
-        bl_path.arcMoveTo(QRectF(offset, h - b_offset - c_rad*2, c_rad*2, c_rad*2), 180)
-        bl_path.arcTo(QRectF(offset, h - b_offset - c_rad*2, c_rad*2, c_rad*2), 180, 90)
+        bl_path.moveTo(offset, h - offset - 40)
+        bl_path.lineTo(offset, h - offset - c_rad)
+        bl_path.arcTo(QRectF(offset, h - offset - c_rad*2, c_rad*2, c_rad*2), 180, 90)
+        bl_path.lineTo(offset + 40, h - offset)
         painter.drawPath(bl_path)
         
         # Bottom-Right
         br_path = QPainterPath()
-        br_path.arcMoveTo(QRectF(w - offset - c_rad*2, h - b_offset - c_rad*2, c_rad*2, c_rad*2), 0)
-        br_path.arcTo(QRectF(w - offset - c_rad*2, h - b_offset - c_rad*2, c_rad*2, c_rad*2), 0, -90)
+        br_path.moveTo(w - offset - 40, h - offset)
+        br_path.lineTo(w - offset - c_rad, h - offset)
+        br_path.arcTo(QRectF(w - offset - c_rad*2, h - offset - c_rad*2, c_rad*2, c_rad*2), 270, 90)
+        br_path.lineTo(w - offset, h - offset - 40)
+        painter.drawPath(br_path)
+        
+        # Add subtle outer glow to corners
+        glow_pen = QPen(QColor(0, 255, 204, 40), 5.0)
+        painter.setPen(glow_pen)
+        painter.drawPath(tl_path)
+        painter.drawPath(tr_path)
+        painter.drawPath(bl_path)
         painter.drawPath(br_path)
 
 

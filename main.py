@@ -57,6 +57,8 @@ class TerminalUI:
         if self.on_text_command:
             self.dashboard.chat_widget.command_entered.connect(self.on_text_command)
             self.dashboard.memory_widget.command_entered.connect(self.on_text_command)
+        
+        # Connect status bar to any specific signals if needed
         self.dashboard.show()
 
     def set_state(self, state):
@@ -594,6 +596,32 @@ TOOL_DECLARATIONS = [
             "required": ["category", "key", "value"]
         }
     },
+    {
+        "name": "delegate_task",
+        "description": (
+            "Delegates a complex task to a specialized department. "
+            "Use this for coding, deep file analysis, complex reasoning, or research. "
+            "CEO (you) remains in control and receives the result."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "role": {
+                    "type": "STRING", 
+                    "description": "The department to delegate to: CTO (coding/reasoning), RESEARCHER (web search), ANALYST (summarization), CREATIVE (images)"
+                },
+                "prompt": {
+                    "type": "STRING",
+                    "description": "The detailed instruction or question for the department."
+                },
+                "file_path": {
+                    "type": "STRING",
+                    "description": "Optional path to a file for analysis."
+                }
+            },
+            "required": ["role", "prompt"]
+        }
+    },
 ]
 
 class UnrealEngineRelay:
@@ -693,6 +721,13 @@ class AnanyaLive:
         self._loop          = None
         self._is_speaking   = False
         self._speaking_lock = threading.Lock()
+        
+        # Initialize IT Company Infrastructure
+        from core.model_registry import init_registry
+        from core.orchestrator import Orchestrator
+        self.registry = init_registry(API_CONFIG_PATH)
+        self.orchestrator = Orchestrator(ui)
+
         self.ui.on_text_command = self._on_text_command
         if self.ui.dashboard:
             if hasattr(self.ui.dashboard, 'chat_widget'):
@@ -735,8 +770,33 @@ class AnanyaLive:
             print("[ANANYA] ⚠️ Cannot send file: Session not active.")
             return
 
-        print(f"[ANANYA] 📂 Processing file: {file_path}")
-        asyncio.run_coroutine_threadsafe(self._process_file_upload(file_path), self._loop)
+        print(f"[ANANYA] 📂 File attached: {file_path}")
+        self.ui.write_log(f"SYS: File attached: {Path(file_path).name}. Sending to CTO for analysis...")
+        
+        # Trigger automatic analysis by CTO
+        asyncio.run_coroutine_threadsafe(self._process_file_with_orchestrator(file_path), self._loop)
+
+    async def _process_file_with_orchestrator(self, file_path: str):
+        """Automatically called when a file is attached to use the CTO model for analysis."""
+        try:
+            summary = await self.orchestrator.analyze_file_automatically(file_path)
+            
+            # Send the CTO's findings to the CEO (Audio model)
+            report = (
+                f"Sir, I've analyzed the file '{Path(file_path).name}'.\n\n"
+                f"CTO FINDINGS:\n{summary}\n\n"
+                f"The file is now in our system memory. How would you like to proceed?"
+            )
+            
+            # Write to chat log
+            self.ui.write_log(f"CTO: {summary}")
+            
+            # Send to CEO session
+            await self.session.send(input=report, end_of_turn=True)
+            
+        except Exception as e:
+            print(f"[ANANYA] [ERR] Automated file analysis failed: {e}")
+            self.ui.write_log(f"ERR: Automated file analysis failed: {e}")
 
     async def _process_file_upload(self, file_path: str):
         import mimetypes
@@ -1011,6 +1071,12 @@ class AnanyaLive:
             elif name == "flight_finder":
                 r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
                 result = r or "Done."
+
+            elif name == "delegate_task":
+                role = args.get("role")
+                prompt = args.get("prompt")
+                f_path = args.get("file_path")
+                result = await self.orchestrator.delegate_task(role, prompt, f_path)
 
             elif name == "control_ui_panel":
                 panel = args.get("panel")
