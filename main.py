@@ -2,49 +2,40 @@ import os
 os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
 os.environ["QT_LOGGING_RULES"] = "*.debug=false;qt.text.font.db.warning=false;qt.qpa.window.warning=false"
 os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+
 import warnings
 warnings.filterwarnings("ignore")
-import asyncio
-import re
-import threading
-import json
+
 import sys
-import traceback
-import socket
-import base64
+import asyncio
+import threading
 from pathlib import Path
-import queue
-import time
-from datetime import datetime
-
-import sounddevice as sd
-import numpy as np
-from google import genai
-from google.genai import types
-
-# Restore action imports
-from actions.file_processor import file_processor
-from actions.flight_finder     import flight_finder
-from actions.open_app          import open_app
-from actions.weather_report    import weather_action
-from actions.send_message      import send_message
-from actions.reminder          import reminder
-from actions.computer_settings import computer_settings
-from actions.screen_processor  import screen_process
-from actions.youtube_video     import youtube_video
-from actions.desktop           import desktop_control
-from actions.browser_control   import browser_control
-from actions.file_controller   import file_controller
-from actions.code_helper       import code_helper
-from actions.dev_agent         import dev_agent
-from actions.web_search        import web_search as web_search_action
-from actions.computer_control  import computer_control
-from actions.game_updater      import game_updater
 
 from PyQt6.QtWidgets import QApplication
 from UI.dashboard import DashboardUI
+from core.logging import LOG
+from core.key_manager import KeyManager
+from core.ue_relay import UnrealEngineRelay
+from core.audio_manager import AudioManager
+from core.tool_executor import ToolExecutor
+from core.session_manager import SessionManager
+from core.orchestrator import Orchestrator
 
-# Configuration Paths
+
+def get_base_dir():
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent
+
+
+BASE_DIR = get_base_dir()
+API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+PROMPT_PATH = BASE_DIR / "core" / "prompt.txt"
+
+SEND_SAMPLE_RATE = 16000
+RECEIVE_SAMPLE_RATE = 24000
+CHANNELS = 1
+CHUNK_SIZE = 1024
 
 
 class TerminalUI:
@@ -52,6 +43,7 @@ class TerminalUI:
         self.muted = False
         self.current_file = None
         self.on_text_command = None
+        self.on_file_selected_callback = None
         self.dashboard = None
         self.app = None
 
@@ -60,30 +52,38 @@ class TerminalUI:
         if self.on_text_command:
             self.dashboard.chat_widget.command_entered.connect(self.on_text_command)
             self.dashboard.memory_widget.command_entered.connect(self.on_text_command)
-        
-        # Connect status bar to any specific signals if needed
+
+        if self.on_file_selected_callback:
+            self.dashboard.chat_widget.file_selected.connect(self.on_file_selected_callback)
+
         self.dashboard.show()
 
     def set_state(self, state):
-        print(f"State: {state}")
+        LOG.info("UI", f"State: {state}")
         if self.dashboard:
             self.dashboard.set_status(state)
 
     def write_log(self, msg, style="plain"):
-        print(msg)
+        LOG.info("UI", msg)
         if self.dashboard:
             from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
-            QMetaObject.invokeMethod(self.dashboard, "add_terminal_log", 
-                                   Qt.ConnectionType.QueuedConnection, 
+            QMetaObject.invokeMethod(self.dashboard, "add_terminal_log",
+                                   Qt.ConnectionType.QueuedConnection,
                                    Q_ARG(str, msg),
                                    Q_ARG(str, style))
 
+    def update_amplitude(self, amp, is_mic=False):
+        if self.dashboard:
+            from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
+            QMetaObject.invokeMethod(self.dashboard, "update_audio_amplitude",
+                                   Qt.ConnectionType.QueuedConnection,
+                                   Q_ARG(float, amp),
+                                   Q_ARG(bool, is_mic))
 
     def wait_for_api_key(self):
         pass
 
     def start_input_loop(self):
-        import threading
         def _loop():
             while True:
                 try:
@@ -94,1374 +94,102 @@ class TerminalUI:
                     break
         threading.Thread(target=_loop, daemon=True).start()
 
-from memory.memory_manager import (
-    load_memory, update_memory, format_memory_for_prompt,
-)
-
-def get_base_dir():
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent
-
-BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
-PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
-LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
-CHANNELS            = 1
-SEND_SAMPLE_RATE    = 16000
-RECEIVE_SAMPLE_RATE = 24000
-CHUNK_SIZE          = 1024
-
-class KeyManager:
-    def __init__(self, config_path):
-        self.config_path = config_path
-        self.keys = []
-        self.current_index = 0
-        self.load_keys()
-
-    def load_keys(self):
-        try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-                self.keys = config.get("gemini_api_keys", [])
-                if not self.keys and "gemini_api_key" in config:
-                    self.keys = [config["gemini_api_key"]]
-        except Exception as e:
-            print(f"[KeyManager] Error loading keys: {e}")
-            self.keys = []
-
-    def get_key(self) -> str:
-        if not self.keys:
-            self.load_keys()
-        if not self.keys:
-            return ""
-        return self.keys[self.current_index % len(self.keys)]
-
-    def rotate(self):
-        if len(self.keys) > 1:
-            self.current_index = (self.current_index + 1) % len(self.keys)
-            print(f"[KeyManager] 🔄 Rotating to key index {self.current_index}")
-            return True
-        return False
-
-key_manager = KeyManager(API_CONFIG_PATH)
-
-def _get_api_key() -> str:
-    return key_manager.get_key()
-
-def _get_voice_name() -> str:
-    try:
-        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-            return json.load(f).get("voice_name", "Aoede")
-    except Exception:
-        return "Aoede"
-
-def _load_system_prompt() -> str:
-    try:
-        return PROMPT_PATH.read_text(encoding="utf-8")
-    except Exception:
-        return (
-            "You are Ananya, a helpful, polite, and caring female AI assistant. "
-            "Be concise, warm, professional, and always use the provided tools to complete tasks. "
-            "Never simulate or guess results — always call the appropriate tool."
-        )
-
-_CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
-
-def _clean_transcript(text: str) -> str:    
-    text = _CTRL_RE.sub("", text)
-    text = re.sub(r"[\x00-\x08\x0b-\x1f]", "", text)
-    return text.strip()
-
-TOOL_DECLARATIONS = [
-    {
-        "name": "open_app",
-        "description": (
-            "Opens any application on the computer. "
-            "Use this whenever the user asks to open, launch, or start any app, "
-            "website, or program. Always call this tool — never just say you opened it."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "app_name": {
-                    "type": "STRING",
-                    "description": "Exact name of the application (e.g. 'WhatsApp', 'Chrome', 'Spotify')"
-                }
-            },
-            "required": ["app_name"]
-        }
-    },
-    {
-        "name": "web_search",
-        "description": "Searches the web for any information.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "query":  {"type": "STRING", "description": "Search query"},
-                "mode":   {"type": "STRING", "description": "search (default) or compare"},
-                "items":  {"type": "ARRAY", "items": {"type": "STRING"}, "description": "Items to compare"},
-                "aspect": {"type": "STRING", "description": "price | specs | reviews"}
-            },
-            "required": ["query"]
-        }
-    },
-    {
-        "name": "weather_report",
-        "description": "Gives the weather report to user",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "city": {"type": "STRING", "description": "City name"}
-            },
-            "required": ["city"]
-        }
-    },
-    {
-        "name": "send_message",
-        "description": "Sends a text message via WhatsApp, Telegram, or other messaging platform.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "receiver":     {"type": "STRING", "description": "Recipient contact name"},
-                "message_text": {"type": "STRING", "description": "The message to send"},
-                "platform":     {"type": "STRING", "description": "Platform: WhatsApp, Telegram, etc."}
-            },
-            "required": ["receiver", "message_text", "platform"]
-        }
-    },
-    {
-        "name": "reminder",
-        "description": "Sets a timed reminder using Task Scheduler.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "date":    {"type": "STRING", "description": "Date in YYYY-MM-DD format"},
-                "time":    {"type": "STRING", "description": "Time in HH:MM format (24h)"},
-                "message": {"type": "STRING", "description": "Reminder message text"}
-            },
-            "required": ["date", "time", "message"]
-        }
-    },
-    {
-        "name": "youtube_video",
-        "description": (
-            "Controls YouTube. Use for: playing videos, summarizing a video's content, "
-            "getting video info, or showing trending videos."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "play | summarize | get_info | trending (default: play)"},
-                "query":  {"type": "STRING", "description": "Search query for play action"},
-                "save":   {"type": "BOOLEAN", "description": "Save summary to Notepad (summarize only)"},
-                "region": {"type": "STRING", "description": "Country code for trending e.g. TR, US"},
-                "url":    {"type": "STRING", "description": "Video URL for get_info action"},
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "screen_process",
-        "description": (
-            "Captures and analyzes the screen or webcam image. "
-            "MUST be called when user asks what is on screen, what you see, "
-            "analyze my screen, look at camera, etc. "
-            "You have NO visual ability without this tool. "
-            "After calling this tool, stay SILENT — the vision module speaks directly."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "angle": {"type": "STRING", "description": "'screen' to capture display, 'camera' for webcam. Default: 'screen'"},
-                "text":  {"type": "STRING", "description": "The question or instruction about the captured image"}
-            },
-            "required": ["text"]
-        }
-    },
-    {
-        "name": "computer_settings",
-        "description": (
-            "Controls the computer: volume, brightness, window management, keyboard shortcuts, "
-            "typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown, "
-            "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. "
-            "Use for ANY single computer control command. NEVER route to agent_task."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":      {"type": "STRING", "description": "The action to perform"},
-                "description": {"type": "STRING", "description": "Natural language description of what to do"},
-                "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."}
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "browser_control",
-        "description": (
-            "Controls any web browser. Use for: opening websites, searching the web, "
-            "clicking elements, filling forms, scrolling, screenshots, navigation, any web-based task. "
-            "Always pass the 'browser' parameter when the user specifies a browser (e.g. 'open in Edge', "
-            "'use Firefox', 'open Chrome'). Multiple browsers can run simultaneously."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":      {"type": "STRING", "description": "go_to | search | click | type | scroll | fill_form | smart_click | smart_type | get_text | get_url | press | new_tab | close_tab | screenshot | back | forward | reload | switch | list_browsers | close | close_all"},
-                "browser":     {"type": "STRING", "description": "Target browser: chrome | edge | firefox | opera | operagx | brave | vivaldi | safari. Omit to use the currently active browser."},
-                "url":         {"type": "STRING", "description": "URL for go_to / new_tab action"},
-                "query":       {"type": "STRING", "description": "Search query for search action"},
-                "engine":      {"type": "STRING", "description": "Search engine: google | bing | duckduckgo | yandex (default: google)"},
-                "selector":    {"type": "STRING", "description": "CSS selector for click/type"},
-                "text":        {"type": "STRING", "description": "Text to click or type"},
-                "description": {"type": "STRING", "description": "Element description for smart_click/smart_type"},
-                "direction":   {"type": "STRING", "description": "up | down for scroll"},
-                "amount":      {"type": "INTEGER", "description": "Scroll amount in pixels (default: 500)"},
-                "key":         {"type": "STRING", "description": "Key name for press action (e.g. Enter, Escape, F5)"},
-                "path":        {"type": "STRING", "description": "Save path for screenshot"},
-                "incognito":   {"type": "BOOLEAN", "description": "Open in private/incognito mode"},
-                "clear_first": {"type": "BOOLEAN", "description": "Clear field before typing (default: true)"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "file_controller",
-        "description": "Manages files and folders: list, create, delete, move, copy, rename, read, write, find, disk usage.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":      {"type": "STRING", "description": "list | create_file | create_folder | delete | move | copy | rename | read | write | find | largest | disk_usage | organize_desktop | info"},
-                "path":        {"type": "STRING", "description": "File/folder path or shortcut: desktop, downloads, documents, home"},
-                "destination": {"type": "STRING", "description": "Destination path for move/copy"},
-                "new_name":    {"type": "STRING", "description": "New name for rename"},
-                "content":     {"type": "STRING", "description": "Content for create_file/write"},
-                "name":        {"type": "STRING", "description": "File name to search for"},
-                "extension":   {"type": "STRING", "description": "File extension to search (e.g. .pdf)"},
-                "count":       {"type": "INTEGER", "description": "Number of results for largest"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "desktop_control",
-        "description": "Controls the desktop: wallpaper, organize, clean, list, stats.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "wallpaper | wallpaper_url | organize | clean | list | stats | task"},
-                "path":   {"type": "STRING", "description": "Image path for wallpaper"},
-                "url":    {"type": "STRING", "description": "Image URL for wallpaper_url"},
-                "mode":   {"type": "STRING", "description": "by_type or by_date for organize"},
-                "task":   {"type": "STRING", "description": "Natural language desktop task"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "code_helper",
-        "description": "Writes, edits, explains, runs, or builds code files.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":      {"type": "STRING", "description": "write | edit | explain | run | build | auto (default: auto)"},
-                "description": {"type": "STRING", "description": "What the code should do or what change to make"},
-                "language":    {"type": "STRING", "description": "Programming language (default: python)"},
-                "output_path": {"type": "STRING", "description": "Where to save the file"},
-                "file_path":   {"type": "STRING", "description": "Path to existing file for edit/explain/run/build"},
-                "code":        {"type": "STRING", "description": "Raw code string for explain"},
-                "args":        {"type": "STRING", "description": "CLI arguments for run/build"},
-                "timeout":     {"type": "INTEGER", "description": "Execution timeout in seconds (default: 30)"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "dev_agent",
-        "description": "Builds complete multi-file projects from scratch: plans, writes files, installs deps, opens VSCode, runs and fixes errors.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "description":  {"type": "STRING", "description": "What the project should do"},
-                "language":     {"type": "STRING", "description": "Programming language (default: python)"},
-                "project_name": {"type": "STRING", "description": "Optional project folder name"},
-                "timeout":      {"type": "INTEGER", "description": "Run timeout in seconds (default: 30)"},
-            },
-            "required": ["description"]
-        }
-    },
-    {
-        "name": "agent_task",
-        "description": (
-            "Executes complex multi-step tasks requiring multiple different tools. "
-            "Examples: 'research X and save to file', 'find and organize files'. "
-            "DO NOT use for single commands. NEVER use for Steam/Epic — use game_updater."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "goal":     {"type": "STRING", "description": "Complete description of what to accomplish"},
-                "priority": {"type": "STRING", "description": "low | normal | high (default: normal)"}
-            },
-            "required": ["goal"]
-        }
-    },
-    {
-        "name": "computer_control",
-        "description": "Direct computer control: type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":      {"type": "STRING", "description": "type | smart_type | click | double_click | right_click | hotkey | press | scroll | move | copy | paste | screenshot | wait | clear_field | focus_window | screen_find | screen_click | random_data | user_data"},
-                "text":        {"type": "STRING", "description": "Text to type or paste"},
-                "x":           {"type": "INTEGER", "description": "X coordinate"},
-                "y":           {"type": "INTEGER", "description": "Y coordinate"},
-                "keys":        {"type": "STRING", "description": "Key combination e.g. 'ctrl+c'"},
-                "key":         {"type": "STRING", "description": "Single key e.g. 'enter'"},
-                "direction":   {"type": "STRING", "description": "up | down | left | right"},
-                "amount":      {"type": "INTEGER", "description": "Scroll amount (default: 3)"},
-                "seconds":     {"type": "NUMBER",  "description": "Seconds to wait"},
-                "title":       {"type": "STRING",  "description": "Window title for focus_window"},
-                "description": {"type": "STRING",  "description": "Element description for screen_find/screen_click"},
-                "type":        {"type": "STRING",  "description": "Data type for random_data"},
-                "field":       {"type": "STRING",  "description": "Field for user_data: name|email|city"},
-                "clear_first": {"type": "BOOLEAN", "description": "Clear field before typing (default: true)"},
-                "path":        {"type": "STRING",  "description": "Save path for screenshot"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "game_updater",
-        "description": (
-            "THE ONLY tool for ANY Steam or Epic Games request. "
-            "Use for: installing, downloading, updating games, listing installed games, "
-            "checking download status, scheduling updates. "
-            "ALWAYS call directly for any Steam/Epic/game request. "
-            "NEVER use agent_task, browser_control, or web_search for Steam/Epic."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":    {"type": "STRING",  "description": "update | install | list | download_status | schedule | cancel_schedule | schedule_status (default: update)"},
-                "platform":  {"type": "STRING",  "description": "steam | epic | both (default: both)"},
-                "game_name": {"type": "STRING",  "description": "Game name (partial match supported)"},
-                "app_id":    {"type": "STRING",  "description": "Steam AppID for install (optional)"},
-                "hour":      {"type": "INTEGER", "description": "Hour for scheduled update 0-23 (default: 3)"},
-                "minute":    {"type": "INTEGER", "description": "Minute for scheduled update 0-59 (default: 0)"},
-                "shutdown_when_done": {"type": "BOOLEAN", "description": "Shut down PC when download finishes"},
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "flight_finder",
-        "description": "Searches Google Flights and speaks the best options.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "origin":      {"type": "STRING",  "description": "Departure city or airport code"},
-                "destination": {"type": "STRING",  "description": "Arrival city or airport code"},
-                "date":        {"type": "STRING",  "description": "Departure date (any format)"},
-                "return_date": {"type": "STRING",  "description": "Return date for round trips"},
-                "passengers":  {"type": "INTEGER", "description": "Number of passengers (default: 1)"},
-                "cabin":       {"type": "STRING",  "description": "economy | premium | business | first"},
-                "save":        {"type": "BOOLEAN", "description": "Save results to Notepad"},
-            },
-            "required": ["origin", "destination", "date"]
-        }
-    },
-    {
-        "name": "control_ui_panel",
-        "description": "Control the visibility of various UI panels like Chat Widget, Dashboard HUD, etc.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "panel": {
-                    "type": "STRING",
-                    "description": "The panel to control. Options: 'chat_widget', 'dashboard_hud'.",
-                    "enum": ["chat_widget", "memory_widget", "dashboard_hud"]
-                },
-                "action": {
-                    "type": "STRING",
-                    "description": "The action to perform. Options: 'show', 'hide', 'toggle'.",
-                    "enum": ["show", "hide", "toggle"]
-                }
-            },
-            "required": ["panel", "action"]
-        }
-    },
-    {
-        "name": "shutdown_ananya",
-        "description": (
-            "DANGER: TERMINATES THE ENTIRE SESSION. "
-            "ONLY call this for explicit full exits like 'Goodbye Ananya', 'System Exit', or 'Shutdown'. "
-            "NEVER call this to close a window, widget, or panel. "
-            "For UI panels, use control_ui_panel."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {},
-        }
-    },
-    {
-    "name": "file_processor",
-    "description": (
-        "Processes any file that the user has uploaded or dropped onto the interface. "
-        "Use this when the user refers to an uploaded file and wants an action on it. "
-        "Supports: images (describe/ocr/resize/compress/convert), "
-        "PDFs (summarize/extract_text/to_word), "
-        "Word docs & text files (summarize/fix/reformat/translate), "
-        "CSV/Excel (analyze/stats/filter/sort/convert), "
-        "JSON/XML (validate/format/analyze), "
-        "code files (explain/review/fix/optimize/run/document/test), "
-        "audio (transcribe/trim/convert/info), "
-        "video (trim/extract_audio/extract_frame/compress/transcribe/info), "
-        "archives (list/extract), "
-        "presentations (summarize/extract_text). "
-        "ALWAYS call this tool when a file has been uploaded and the user gives a command about it. "
-        "If the user's command is ambiguous, pick the most logical action for that file type."
-    ),
-    "parameters": {
-        "type": "OBJECT",
-        "properties": {
-            "file_path": {
-                "type": "STRING",
-                "description": "Full path to the uploaded file. Leave empty to use the currently uploaded file."
-            },
-            "action": {
-                "type": "STRING",
-                "description": (
-                    "What to do with the file. Examples by type:\n"
-                    "image: describe | ocr | resize | compress | convert | info\n"
-                    "pdf: summarize | extract_text | to_word | info\n"
-                    "docx/txt: summarize | fix | reformat | translate_hint | word_count | to_bullet\n"
-                    "csv/excel: analyze | stats | filter | sort | convert | info\n"
-                    "json: validate | format | analyze | to_csv\n"
-                    "code: explain | review | fix | optimize | run | document | test\n"
-                    "audio: transcribe | trim | convert | info\n"
-                    "video: trim | extract_audio | extract_frame | compress | transcribe | info | convert\n"
-                    "archive: list | extract\n"
-                    "pptx: summarize | extract_text | analyze"
-                )
-            },
-            "instruction": {
-                "type": "STRING",
-                "description": "Free-form instruction if action doesn't cover it. E.g. 'translate this to Turkish', 'find all email addresses'"
-            },
-            "format": {
-                "type": "STRING",
-                "description": "Target format for conversion. E.g. 'mp3', 'pdf', 'csv', 'png'"
-            },
-            "width":     {"type": "INTEGER", "description": "Target width for image resize"},
-            "height":    {"type": "INTEGER", "description": "Target height for image resize"},
-            "scale":     {"type": "NUMBER",  "description": "Scale factor for image resize (e.g. 0.5)"},
-            "quality":   {"type": "INTEGER", "description": "Quality 1-100 for image/video compress"},
-            "start":     {"type": "STRING",  "description": "Start time for trim: seconds or HH:MM:SS"},
-            "end":       {"type": "STRING",  "description": "End time for trim: seconds or HH:MM:SS"},
-            "timestamp": {"type": "STRING",  "description": "Timestamp for video frame extraction HH:MM:SS"},
-            "column":    {"type": "STRING",  "description": "Column name for CSV filter/sort"},
-            "value":     {"type": "STRING",  "description": "Filter value for CSV filter"},
-            "condition": {"type": "STRING",  "description": "Filter condition: equals|contains|gt|lt"},
-            "ascending": {"type": "BOOLEAN", "description": "Sort order for CSV sort (default: true)"},
-            "save":      {"type": "BOOLEAN", "description": "Save result to file (default: true)"},
-            "destination": {"type": "STRING", "description": "Output folder for archive extract"},
-        },
-        "required": []
-    }
-},
-    {
-        "name": "save_memory",
-        "description": (
-            "Save an important personal fact about the user to long-term memory. "
-            "Call this silently whenever the user reveals something worth remembering: "
-            "name, age, city, job, preferences, hobbies, relationships, projects, or future plans. "
-            "Do NOT call for: weather, reminders, searches, or one-time commands. "
-            "Do NOT announce that you are saving — just call it silently. "
-            "Values must be in English regardless of the conversation language."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "category": {
-                    "type": "STRING",
-                    "description": (
-                        "identity — name, age, birthday, city, job, language, nationality | "
-                        "preferences — favorite food/color/music/film/game/sport, hobbies | "
-                        "projects — active projects, goals, things being built | "
-                        "relationships — friends, family, partner, colleagues | "
-                        "wishes — future plans, things to buy, travel dreams | "
-                        "notes — habits, schedule, anything else worth remembering"
-                    )
-                },
-                "key":   {"type": "STRING", "description": "Short snake_case key (e.g. name, favorite_food, sister_name)"},
-                "value": {"type": "STRING", "description": "Concise value in English (e.g. Fatih, pizza, older sister)"},
-            },
-            "required": ["category", "key", "value"]
-        }
-    },
-    {
-        "name": "delegate_task",
-        "description": (
-            "Delegates a complex task to a specialized department. "
-            "Use this for coding, deep file analysis, complex reasoning, or research. "
-            "CEO (you) remains in control and receives the result."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "role": {
-                    "type": "STRING", 
-                    "description": "The department to delegate to: CTO (coding/reasoning), RESEARCHER (web search), ANALYST (summarization), CREATIVE (images)"
-                },
-                "prompt": {
-                    "type": "STRING",
-                    "description": "The detailed instruction or question for the department."
-                },
-                "file_path": {
-                    "type": "STRING",
-                    "description": "Optional path to a file for analysis."
-                }
-            },
-            "required": ["role", "prompt"]
-        }
-    },
-]
-
-class UnrealEngineRelay:
-    """Relays real-time audio bytes and state commands from Ananya to Unreal Engine 5."""
-    def __init__(self, host="0.0.0.0", port=8080):
-        self.host = host
-        self.port = port
-        self.clients = []
-        self.clients_lock = threading.Lock()
-        self.server_socket = None
-        self.running = False
-
-    def start(self):
-        self.running = True
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            self.server_socket.bind((self.host, self.port))
-            self.server_socket.listen(5)
-            print(f"[ANANYA] [UE5] TCP Socket Server started on {self.host}:{self.port}")
-            threading.Thread(target=self._accept_clients, daemon=True).start()
-        except Exception as e:
-            print(f"[ANANYA] [UE5] Failed to start TCP server on {self.host}:{self.port}: {e}")
-
-    def stop(self):
-        self.running = False
-        if self.server_socket:
-            try:
-                self.server_socket.close()
-            except:
-                pass
-        with self.clients_lock:
-            for c in self.clients:
-                try:
-                    c.close()
-                except:
-                    pass
-            self.clients.clear()
-
-    def _accept_clients(self):
-        while self.running:
-            try:
-                client_sock, addr = self.server_socket.accept()
-                print(f"[ANANYA] [UE5] Client connected from {addr}")
-                with self.clients_lock:
-                    self.clients.append(client_sock)
-                # Send handshaking state
-                self.send_to_client(client_sock, {"event": "handshake", "status": "connected"})
-            except Exception as e:
-                if self.running:
-                    print(f"[ANANYA] [UE5] Error accepting clients: {e}")
-                break
-
-    def broadcast(self, data_dict):
-        """Broadcasts a dictionary serialized as a JSON-line packet to all connected UE5 clients."""
-        with self.clients_lock:
-            if not self.clients:
-                return
-            
-            try:
-                message = (json.dumps(data_dict) + "\n").encode('utf-8')
-            except Exception as e:
-                print(f"[ANANYA] [UE5] Serialization error: {e}")
-                return
-
-            inactive_clients = []
-            for client in self.clients:
-                try:
-                    client.sendall(message)
-                except Exception:
-                    inactive_clients.append(client)
-
-            # Clean up disconnected clients
-            for client in inactive_clients:
-                try:
-                    client.close()
-                except:
-                    pass
-                if client in self.clients:
-                    self.clients.remove(client)
-                print("[ANANYA] [UE5] Disconnected inactive client.")
-
-    def send_to_client(self, client_sock, data_dict):
-        try:
-            message = (json.dumps(data_dict) + "\n").encode('utf-8')
-            client_sock.sendall(message)
-        except Exception:
-            pass
-
-class AnanyaLive:
-
-    def __init__(self, ui: TerminalUI):
-        self.ui             = ui
-        self.session        = None
-        self.audio_in_queue = None
-        self.out_queue      = None
-        self._loop          = None
-        self._is_speaking   = False
-        self._speaking_lock = threading.Lock()
-        
-        # Initialize IT Company Infrastructure
-        from core.model_registry import init_registry
-        from core.orchestrator import Orchestrator
-        self.registry = init_registry(API_CONFIG_PATH)
-        self.orchestrator = Orchestrator(ui)
-
-        self.ui.on_text_command = self._on_text_command
-        if self.ui.dashboard:
-            if hasattr(self.ui.dashboard, 'chat_widget'):
-                self.ui.dashboard.chat_widget.command_entered.connect(self._on_text_command)
-                self.ui.dashboard.chat_widget.file_selected.connect(self._on_file_selected)
-            if hasattr(self.ui.dashboard, 'memory_widget'):
-                self.ui.dashboard.memory_widget.command_entered.connect(self._on_text_command)
-            # Initial memory and history load
-            self.refresh_memory_ui()
-            self._load_chat_history()
-        self._turn_done_event: asyncio.Event | None = None
-        self._last_user_text = ""
-        
-        self.ue_relay = UnrealEngineRelay(host="0.0.0.0", port=8080)
-        self.ue_relay.start()
-        
-        self.turn_started = False # For chat streaming
-
-
-    def _on_text_command(self, text: str):
-        if not text or not text.strip():
-            return
-        if not self._loop or not self.session:
-            err_msg = "SYS: Cannot send text: Session not active."
-            print(f"[ANANYA] ⚠️ {err_msg}")
-            self.ui.write_log(err_msg)
-            return
-        
-        print(f"[ANANYA] 💬 Sending text command: {text}")
-        self.ui.write_log(f"You: {text}") 
-        self._last_user_text = text
-        self._save_chat_history(f"You: {text}")
-        
-        asyncio.run_coroutine_threadsafe(
-            self.session.send(input=text, end_of_turn=True),
-            self._loop
-        )
-
-
-    def _on_file_selected(self, file_path: str):
-        if not self._loop or not self.session:
-            print("[ANANYA] ⚠️ Cannot send file: Session not active.")
-            return
-
-        print(f"[ANANYA] 📂 File attached: {file_path}")
-        self.ui.write_log(f"SYS: File attached: {Path(file_path).name}. Sending to CTO for analysis...")
-        
-        # Trigger automatic analysis by CTO
-        asyncio.run_coroutine_threadsafe(self._process_file_with_orchestrator(file_path), self._loop)
-
-    async def _process_file_with_orchestrator(self, file_path: str):
-        """Automatically called when a file is attached to use the CTO model for analysis."""
-        try:
-            summary = await self.orchestrator.analyze_file_automatically(file_path)
-            
-            # Send the CTO's findings to the CEO (Audio model)
-            report = (
-                f"Sir, I've analyzed the file '{Path(file_path).name}'.\n\n"
-                f"CTO FINDINGS:\n{summary}\n\n"
-                f"The file is now in our system memory. How would you like to proceed?"
-            )
-            
-            # Write to chat log
-            self.ui.write_log(f"CTO: {summary}")
-            
-            # Send to CEO session
-            await self.session.send(input=report, end_of_turn=True)
-            
-        except Exception as e:
-            print(f"[ANANYA] [ERR] Automated file analysis failed: {e}")
-            self.ui.write_log(f"ERR: Automated file analysis failed: {e}")
-
-    async def _process_file_upload(self, file_path: str):
-        import mimetypes
-        from pathlib import Path
-        
-        path = Path(file_path)
-        mime_type, _ = mimetypes.guess_type(file_path)
-        fname = path.name
-
-        try:
-            # 1. Handle Images
-            if mime_type and mime_type.startswith("image/"):
-                with open(file_path, "rb") as f:
-                    data = f.read()
-                await self.session.send(input=types.Blob(data=data, mime_type=mime_type), end_of_turn=False)
-                await self.session.send(input=f"I've uploaded an image: {fname}. Please analyze it.", end_of_turn=True)
-                print(f"[ANANYA] 🖼️ Sent image: {fname}")
-
-            # 2. Handle PDFs
-            elif mime_type == "application/pdf":
-                with open(file_path, "rb") as f:
-                    data = f.read()
-                await self.session.send(input=types.Blob(data=data, mime_type=mime_type), end_of_turn=False)
-                await self.session.send(input=f"I've uploaded a PDF: {fname}. Please read it.", end_of_turn=True)
-                print(f"[ANANYA] 📄 Sent PDF: {fname}")
-
-            # 3. Handle Text/Code Files
-            else:
-                try:
-                    content = path.read_text(encoding="utf-8", errors="ignore")
-                    # Send as a text block
-                    prompt = f" Sir, I've attached a file for you to review.\n\nFILE: {fname}\n---\n{content}\n---\nPlease acknowledge this file."
-                    await self.session.send(input=prompt, end_of_turn=True)
-                    print(f"[ANANYA] 📝 Sent text file: {fname}")
-                except Exception as e:
-                    print(f"[ANANYA] [ERR] Could not read file as text: {e}")
-
-        except Exception as e:
-            print(f"[ANANYA] [ERR] File upload failed: {e}")
-            self.ui.write_log(f"ERR: File upload failed: {str(e)[:50]}")
-
-
-    def set_speaking(self, value: bool):
-        with self._speaking_lock:
-            if self._is_speaking == value:
-                return
-            self._is_speaking = value
-        if value:
-            self.ui.set_state("SPEAKING")
-            self.ue_relay.broadcast({"event": "state", "value": "SPEAKING"})
-        elif not self.ui.muted:
-            self.ui.set_state("LISTENING")
-            self.ue_relay.broadcast({"event": "state", "value": "LISTENING"})
-
-    def send_text(self, text):
-        """Sends text to the session with a small debounce/check to prevent spamming."""
-        if not self.session:
-            return
-            
-        # If text is very short (like just 'hi'), we might want to wait a bit
-        # But for now, we just ensure it's sent in the active loop
-        asyncio.run_coroutine_threadsafe(self._debounced_send(text), self._loop)
-
-    async def _debounced_send(self, text):
-        if self.session:
-            try:
-                await self.session.send(text, end_of_turn=True)
-            except Exception as e:
-                print(f"[ANANYA] [ERR] Failed to send text: {e}")
-
-    def speak_error(self, tool_name: str, error: str):
-        short = str(error)[:120]
-        self.ui.write_log(f"ERR: {tool_name} — {short}")
-        self.speak(f"Sir, {tool_name} encountered an error. {short}")
-
-    def _save_chat_history(self, line: str):
-        try:
-            path = BASE_DIR / "memory" / "chat_history.json"
-            history = []
-            if path.exists():
-                history = json.loads(path.read_text(encoding="utf-8"))
-            history.append({"text": line, "time": datetime.now().isoformat()})
-            # Keep last 50 messages
-            history = history[-50:]
-            path.write_text(json.dumps(history, indent=2), encoding="utf-8")
-        except Exception as e:
-            print(f"[History] Save error: {e}")
-
-    def _load_chat_history(self):
-        try:
-            path = BASE_DIR / "memory" / "chat_history.json"
-            if path.exists():
-                history = json.loads(path.read_text(encoding="utf-8"))
-                for item in history:
-                    msg = item.get("text", "")
-                    if msg and self.ui.dashboard:
-                        from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
-                        QMetaObject.invokeMethod(self.ui.dashboard, "add_terminal_log",
-                                               Qt.ConnectionType.QueuedConnection,
-                                               Q_ARG(str, msg))
-        except Exception as e:
-            print(f"[History] Load error: {e}")
-
     def refresh_memory_ui(self):
-        if self.ui.dashboard:
+        if self.dashboard:
+            from memory.memory_manager import load_memory
             memory = load_memory()
             from PyQt6.QtCore import QMetaObject, Q_ARG, Qt
-            QMetaObject.invokeMethod(self.ui.dashboard, "refresh_memory_ui",
+            QMetaObject.invokeMethod(self.dashboard, "refresh_memory_ui",
                                    Qt.ConnectionType.QueuedConnection,
                                    Q_ARG(dict, memory))
 
-    def _build_config(self) -> types.LiveConnectConfig:
-        from datetime import datetime
 
-        memory     = load_memory()
-        mem_str    = format_memory_for_prompt(memory)
-        sys_prompt = _load_system_prompt()
+def init_components(ui):
+    key_manager = KeyManager(API_CONFIG_PATH)
+    ue_relay = UnrealEngineRelay(host="0.0.0.0", port=8080)
+    audio_manager = AudioManager(
+        send_sample_rate=SEND_SAMPLE_RATE,
+        receive_sample_rate=RECEIVE_SAMPLE_RATE,
+        channels=CHANNELS,
+        chunk_size=CHUNK_SIZE
+    )
+    audio_manager.set_amplitude_callback(ui.update_amplitude)
+    audio_manager.set_ue_broadcast_callback(ue_relay.broadcast)
 
-        now      = datetime.now()
-        time_str = now.strftime("%A, %B %d, %Y — %I:%M %p")
-        time_ctx = (
-            f"[CURRENT DATE & TIME]\n"
-            f"Right now it is: {time_str}\n"
-            f"Use this to calculate exact times for reminders.\n\n"
-        )
-        
-        # Load recent chat history for context preservation
-        history_str = ""
-        try:
-            history_path = BASE_DIR / "memory" / "chat_history.json"
-            if history_path.exists():
-                history_data = json.loads(history_path.read_text(encoding="utf-8"))
-                history_str = "\n[RECENT CONVERSATION CONTEXT]\n"
-                for entry in history_data[-15:]: # Include last 15 messages
-                    history_str += f"{entry['text']}\n"
-                history_str += "\n[END CONTEXT]\n"
-        except Exception as e:
-            print(f"[Context] Error loading history: {e}")
+    from core.model_registry import init_registry
+    registry = init_registry(API_CONFIG_PATH)
+    orchestrator = Orchestrator(ui)
 
-        parts = [time_ctx]
-        if history_str:
-            parts.append(history_str)
-        if mem_str:
-            parts.append(mem_str)
-        parts.append(sys_prompt)
+    tool_executor = ToolExecutor(ui, orchestrator, speak_callback=None)
 
-        return types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
-            # Disabling transcription configs to resolve 1008 "Operation not implemented" error
-            # output_audio_transcription=types.AudioTranscriptionConfig(),
-            # input_audio_transcription=types.AudioTranscriptionConfig(),
-            system_instruction="\n".join(parts),
-            tools=[{"function_declarations": TOOL_DECLARATIONS}],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name=_get_voice_name()
-                    )
-                )
-            ),
-        )
+    session_manager = SessionManager(
+        ui=ui,
+        key_manager=key_manager,
+        audio_manager=audio_manager,
+        tool_executor=tool_executor,
+        ue_relay=ue_relay,
+        config_path=API_CONFIG_PATH,
+        prompt_path=PROMPT_PATH
+    )
 
-    async def _execute_tool(self, fc) -> types.FunctionResponse:
-        name = fc.name
-        args = dict(fc.args or {})
+    # Wire up speak callback now that we have session_manager
+    tool_executor.speak = session_manager.send_text
 
-        print(f"[ANANYA] 🔧 {name}  {args}")
-        self.ui.set_state("THINKING")
-        self.ue_relay.broadcast({"event": "state", "value": "THINKING"})
+    # Wire up UI callbacks
+    ui.on_text_command = session_manager.on_text_command
+    ui.on_file_selected_callback = session_manager.on_file_selected
 
-        if name == "save_memory":
-            category = args.get("category", "notes")
-            key      = args.get("key", "")
-            value    = args.get("value", "")
-            if key and value:
-                update_memory({category: {key: {"value": value}}})
-                print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
-                self.refresh_memory_ui()
-            if not self.ui.muted:
-                self.ui.set_state("LISTENING")
-                self.ue_relay.broadcast({"event": "state", "value": "LISTENING"})
-            return types.FunctionResponse(
-                id=fc.id, name=name,
-                response={"result": "ok", "silent": True}
-            )
+    # Set logging UI callback
+    LOG.set_ui_callback(ui.dashboard)
 
-        loop   = asyncio.get_event_loop()
-        result = "Done."
+    # Hot-reload connection for API Settings saved
+    def reload_config():
+        LOG.info("Main", "Settings changed! Hot-reloading API keys...")
+        key_manager.load_keys()
+        registry.key_manager.load_keys()
+        ui.write_log("SYS: Settings updated successfully. Real-time keys reloaded.")
 
-        try:
-            if name == "open_app":
-                r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
-                result = r or f"Opened {args.get('app_name')}."
+    ui.dashboard.settings_widget.settings_saved.connect(reload_config)
 
-            elif name == "weather_report":
-                r = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
-                result = r or "Weather delivered."
+    return {
+        "key_manager": key_manager,
+        "ue_relay": ue_relay,
+        "audio_manager": audio_manager,
+        "orchestrator": orchestrator,
+        "tool_executor": tool_executor,
+        "session_manager": session_manager,
+    }
 
-            elif name == "browser_control":
-                r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "file_controller":
-                r = await loop.run_in_executor(None, lambda: file_controller(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "send_message":
-                r = await loop.run_in_executor(None, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None))
-                result = r or f"Message sent to {args.get('receiver')}."
-
-            elif name == "reminder":
-                r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
-                result = r or "Reminder set."
-
-            elif name == "youtube_video":
-                r = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
-                result = r or "Done."
-
-            elif name == "screen_process":
-                threading.Thread(
-                    target=screen_process,
-                    kwargs={"parameters": args, "response": None,
-                            "player": self.ui, "session_memory": None},
-                    daemon=True
-                ).start()
-                result = "Vision module activated. Stay completely silent — vision module will speak directly."
-
-            elif name == "computer_settings":
-                r = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
-                result = r or "Done."
-
-            elif name == "desktop_control":
-                r = await loop.run_in_executor(None, lambda: desktop_control(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "code_helper":
-                r = await loop.run_in_executor(None, lambda: code_helper(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
-
-            elif name == "dev_agent":
-                r = await loop.run_in_executor(None, lambda: dev_agent(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
-
-            elif name == "agent_task":
-                from agent.task_queue import get_queue, TaskPriority
-                priority_map = {"low": TaskPriority.LOW, "normal": TaskPriority.NORMAL, "high": TaskPriority.HIGH}
-                priority = priority_map.get(args.get("priority", "normal").lower(), TaskPriority.NORMAL)
-                task_id  = get_queue().submit(goal=args.get("goal", ""), priority=priority, speak=self.speak)
-                result   = f"Task started (ID: {task_id})."
-
-            elif name == "web_search":
-                r = await loop.run_in_executor(None, lambda: web_search_action(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "file_processor":
-                if not args.get("file_path") and self.ui.current_file:
-                    args["file_path"] = self.ui.current_file
-                r = await loop.run_in_executor(
-                    None,
-                    lambda: file_processor(parameters=args, player=self.ui, speak=self.speak)
-                )
-                result = r or "Done."
-
-            elif name == "computer_control":
-                r = await loop.run_in_executor(None, lambda: computer_control(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "game_updater":
-                r = await loop.run_in_executor(None, lambda: game_updater(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
-
-            elif name == "flight_finder":
-                r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "delegate_task":
-                role = args.get("role")
-                prompt = args.get("prompt")
-                f_path = args.get("file_path")
-                result = await self.orchestrator.delegate_task(role, prompt, f_path)
-
-            elif name == "control_ui_panel":
-                panel = args.get("panel")
-                action = args.get("action")
-                if panel == "chat_widget":
-                    if self.ui and self.ui.dashboard:
-                        if action == "show":
-                            self.ui.dashboard.chat_widget.show()
-                            self.ui.dashboard.chat_widget.input_field.setFocus()
-                        elif action == "hide":
-                            self.ui.dashboard.chat_widget.hide()
-                        elif action == "toggle":
-                            self.ui.dashboard.chat_widget.toggle_visibility()
-                        result = f"Chat Widget {action}ed."
-                    else:
-                        result = "UI not available."
-                elif panel == "memory_widget":
-                    if self.ui and self.ui.dashboard:
-                        if action == "show":
-                            self.ui.dashboard.memory_widget.show()
-                            self.ui.dashboard.memory_widget.input_field.setFocus()
-                        elif action == "hide":
-                            self.ui.dashboard.memory_widget.hide()
-                        elif action == "toggle":
-                            self.ui.dashboard.memory_widget.toggle_visibility()
-                        result = f"Memory Widget {action}ed."
-                    else:
-                        result = "UI not available."
-                elif panel == "dashboard_hud":
-                    result = "Dashboard HUD control not yet implemented."
-                else:
-                    result = f"Unknown panel: {panel}"
-
-            elif name == "shutdown_ananya":
-                # SAFETY SHIELD: Check if this was a mistake
-                context = self._last_user_text.lower()
-                danger_words = ["close", "hide", "panel", "widget", "chat", "memory", "window"]
-                is_ui_request = any(w in context for w in danger_words)
-                
-                if is_ui_request:
-                    print(f"[ANANYA] 🛡️ SHUTDOWN SHIELD BLOCKED request. Context: '{context}'")
-                    self.ui.write_log("SYS: Shutdown blocked (UI context detected).")
-                    return types.FunctionResponse(
-                        id=fc.id, name=name,
-                        response={"result": "Shutdown blocked. Use control_ui_panel to manage widgets."}
-                    )
-
-                self.ui.write_log("SYS: Shutdown requested.")
-                self.speak("Goodbye!")
-                def _shutdown():
-                    import time, os
-                    time.sleep(1)
-                    os._exit(0)
-                threading.Thread(target=_shutdown, daemon=True).start()
-
-            else:
-                result = f"Unknown tool: {name}"
-
-        except Exception as e:
-            result = f"Tool '{name}' failed: {e}"
-            traceback.print_exc()
-            self.speak_error(name, e)
-
-        if not self.ui.muted:
-            self.ui.set_state("LISTENING")
-            self.ue_relay.broadcast({"event": "state", "value": "LISTENING"})
-
-        print(f"[ANANYA] 📤 {name} → {str(result)[:80]}")
-        return types.FunctionResponse(
-            id=fc.id, name=name,
-            response={"result": result}
-        )
-
-    async def _send_realtime(self):
-        while True:
-            msg = await self.out_queue.get()
-            await self.session.send_realtime_input(audio=types.Blob(data=msg, mime_type='audio/pcm;rate=16000'))
-
-    async def _listen_audio(self):
-        print("[ANANYA] [MIC] Mic started")
-        loop = asyncio.get_event_loop()
-
-        def _mic_callback(indata, frames, time_info, status):
-            if status:
-                print(f"[ANANYA] [MIC] {status}")
-            
-            # Calculate peak volume to skip silent chunks
-            import numpy as np
-            volume_norm = np.linalg.norm(indata) * 10
-            
-            # Only send audio if there's actual sound (Threshold: 0.05)
-            # This saves significant API quota/tokens
-            if volume_norm > 0.05:
-                data = indata.tobytes()
-                loop.call_soon_threadsafe(
-                    self.out_queue.put_nowait,
-                    data
-                )
-
-        try:
-            with sd.InputStream(
-                samplerate=SEND_SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="int16",
-                blocksize=CHUNK_SIZE,
-                callback=_mic_callback,
-            ):
-                print("[ANANYA] [MIC] Mic stream open")
-                while True:
-                    await asyncio.sleep(0.1)
-        except Exception as e:
-            print(f"[ANANYA] [ERR] Mic: {e}")
-            raise
-
-    async def _receive_audio(self):
-        print("[ANANYA] [RECV] Recv started")
-        out_buf, in_buf = [], []
-
-        try:
-            while True:
-                self.turn_started = True # Start of a new model turn
-                async for response in self.session.receive():
-
-                    # Handle model turn parts directly to avoid SDK warnings when multiple parts (like thoughts or text) exist.
-                    # response.data is a shortcut that can trigger warnings if multiple parts are present.
-                    if response.server_content and response.server_content.model_turn:
-                        for part in response.server_content.model_turn.parts:
-                            if part.inline_data:
-                                if self._turn_done_event and self._turn_done_event.is_set():
-                                    self._turn_done_event.clear()
-                                self.audio_in_queue.put_nowait(part.inline_data.data)
-                            
-                            if part.text:
-                                # If transcription is enabled, sc.output_transcription will handle the text.
-                                # Otherwise, we use the text part directly.
-                                if not response.server_content.output_transcription:
-                                    txt = _clean_transcript(part.text)
-                                    # Hard filter: if text starts with ** and ends with ** or looks like a reasoning header, skip it.
-                                    # Some models put reasoning in text even if thought field exists.
-                                    if txt and not (txt.startswith("**") and txt.count("**") >= 2 and len(txt) < 200):
-                                        out_buf.append(txt)
-                                        # Stream to UI
-                                        if self.turn_started:
-                                            self.ui.write_log(txt, "ai")
-                                            self.turn_started = False
-                                        else:
-                                            self.ui.write_log(txt, "streaming")
-
-                            
-                            if part.thought:
-                                # For thinking models, we can log thoughts or just ignore them for audio playback.
-                                # Currently we ignore them to avoid mixing thoughts into the spoken output.
-                                pass
-
-                    if response.server_content:
-                        sc = response.server_content
-
-                        if getattr(sc, "interrupted", False):
-                            print("[ANANYA] 🛑 Interruption detected by server!")
-                            while not self.audio_in_queue.empty():
-                                try:
-                                    self.audio_in_queue.get_nowait()
-                                except asyncio.QueueEmpty:
-                                    break
-                            self.set_speaking(False)
-                            if hasattr(self, "audio_playback_lock") and self.audio_playback_lock:
-                                with self.audio_playback_lock:
-                                    if hasattr(self, "audio_playback_buffer"):
-                                        self.audio_playback_buffer.clear()
-                            print("[ANANYA] 🛑 Main playback buffer cleared on interruption!")
-                            if self._turn_done_event:
-                                self._turn_done_event.clear()
-                            out_buf = []
-                            in_buf = []
-                            try:
-                                from actions.screen_processor import _session as vision_session
-                                vision_session.abort_playback()
-                            except Exception as ev:
-                                print(f"[ANANYA] ⚠️ Could not abort vision playback: {ev}")
-
-                        if sc.output_transcription and sc.output_transcription.text:
-                            txt = _clean_transcript(sc.output_transcription.text)
-                            if txt:
-                                out_buf.append(txt)
-
-                        if sc.input_transcription and sc.input_transcription.text:
-                            txt = _clean_transcript(sc.input_transcription.text)
-                            if txt:
-                                in_buf.append(txt)
-
-                        if sc.turn_complete:
-                            if self._turn_done_event:
-                                self._turn_done_event.set()
-
-                            full_in = " ".join(in_buf).strip()
-                            if full_in:
-                                self.ui.write_log(f"You: {full_in}")
-                                self._last_user_text = full_in
-                                self._save_chat_history(f"You: {full_in}")
-                            in_buf = []
-
-                            full_out = " ".join(out_buf).strip()
-                            if full_out:
-                                self.ui.write_log(f"Ananya: {full_out}")
-                                self._save_chat_history(f"Ananya: {full_out}")
-                            out_buf = []
-
-                    if response.tool_call:
-                        fn_responses = []
-                        for fc in response.tool_call.function_calls:
-                            print(f"[ANANYA] 📞 {fc.name}")
-                            fr = await self._execute_tool(fc)
-                            fn_responses.append(fr)
-                        await self.session.send_tool_response(
-                            function_responses=fn_responses
-                        )
-        except Exception as e:
-            print(f"[ANANYA] [ERR] Recv: {e}")
-            traceback.print_exc()
-            raise
-
-    async def _play_audio(self):
-        print("[ANANYA] [PLAY] Async playback started")
-
-        self.audio_playback_buffer = bytearray()
-        self.audio_playback_lock = threading.Lock()
-
-        def playback_callback(outdata, frames, time_info, status):
-            bytes_needed = frames * CHANNELS * 2
-            chunk = b""
-            with self.audio_playback_lock:
-                if len(self.audio_playback_buffer) >= bytes_needed:
-                    chunk = bytes(self.audio_playback_buffer[:bytes_needed])
-                    outdata[:bytes_needed] = chunk
-                    del self.audio_playback_buffer[:bytes_needed]
-                else:
-                    present = len(self.audio_playback_buffer)
-                    if present > 0:
-                        chunk = bytes(self.audio_playback_buffer[:present])
-                        outdata[:present] = chunk
-                        self.audio_playback_buffer.clear()
-                    outdata[present:bytes_needed] = b'\x00' * (bytes_needed - present)
-            
-            # Real-time amplitude and Unreal Engine lipsync broadcast (runs inside audio callback thread)
-            if chunk and any(chunk):
-                try:
-                    audio_b64 = base64.b64encode(chunk).decode('utf-8')
-                    self.ue_relay.broadcast({"event": "audio", "value": audio_b64})
-                except Exception:
-                    pass
-
-                try:
-                    audio_data = np.frombuffer(chunk, dtype=np.int16)
-                    if len(audio_data) > 0:
-                        max_val = np.max(np.abs(audio_data))
-                        amp = float(max_val) / 32768.0
-                except Exception:
-                    pass
-
-        stream = sd.RawOutputStream(
-            samplerate=RECEIVE_SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=CHUNK_SIZE,
-            callback=playback_callback
-        )
-        self.playback_stream = stream
-        stream.start()
-
-        try:
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(
-                        self.audio_in_queue.get(),
-                        timeout=0.1
-                    )
-                except asyncio.TimeoutError:
-                    with self.audio_playback_lock:
-                        buffer_empty = (len(self.audio_playback_buffer) == 0)
-                    if (
-                        self._turn_done_event
-                        and self._turn_done_event.is_set()
-                        and self.audio_in_queue.empty()
-                        and buffer_empty
-                    ):
-                        self.set_speaking(False)
-                        self._turn_done_event.clear()
-                    continue
-                
-                self.set_speaking(True)
-                with self.audio_playback_lock:
-                    self.audio_playback_buffer.extend(chunk)
-                
-        except Exception as e:
-            print(f"[ANANYA] [ERR] Playback error: {e}")
-            raise
-        finally:
-            self.set_speaking(False)
-            self.playback_stream = None
-            try:
-                stream.stop()
-                stream.close()
-            except Exception:
-                pass
-            print("[ANANYA] [PLAY] Playback stopped")
-
-    async def run(self):
-        while True:
-            try:
-                api_key = _get_api_key()
-                if not api_key:
-                    print("[ANANYA] [ERR] No API key found in config/api_keys.json")
-                    await asyncio.sleep(10)
-                    continue
-
-                client = genai.Client(
-                    api_key=api_key,
-                    http_options={"api_version": "v1beta"}
-                )
-
-                print("[ANANYA] [CONN] Connecting...")
-                self.ui.set_state("THINKING")
-                self.ue_relay.broadcast({"event": "state", "value": "THINKING"})
-                config = self._build_config()
-
-                async with (
-                    client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
-                    asyncio.TaskGroup() as tg,
-                ):
-                    self.session        = session
-                    self._loop          = asyncio.get_event_loop()
-                    self.audio_in_queue = asyncio.Queue()
-                    self.out_queue      = asyncio.Queue(maxsize=200)
-                    self._turn_done_event = asyncio.Event()
-
-                    print("[ANANYA] [OK] Connected.")
-                    self.ui.set_state("LISTENING")
-                    self.ue_relay.broadcast({"event": "state", "value": "LISTENING"})
-                    self.ui.write_log("SYS: Ananya online.")
-
-                    tg.create_task(self._send_realtime())
-                    tg.create_task(self._listen_audio())
-                    tg.create_task(self._receive_audio())
-                    tg.create_task(self._play_audio())
-
-            except Exception as e:
-                print(f"[ANANYA] [ERR] {e}")
-                # Rotate key if there was a connection or rate limit error
-                if "429" in str(e) or "limit" in str(e).lower() or "connection" in str(e).lower() or "1008" in str(e):
-                    key_manager.rotate()
-                traceback.print_exc()
-            self.set_speaking(False)
-            self.ui.set_state("THINKING")
-            print("[ANANYA] [RETRY] Reconnecting in 3s...")
-            await asyncio.sleep(3)
 
 def main():
+    LOG.info("Main", "Starting Ananya AI...")
+
     app = QApplication(sys.argv)
     ui = TerminalUI()
     ui.app = app
     ui.init_gui()
     ui.start_input_loop()
-    
-    ananya = AnanyaLive(ui)
 
-    # Run the AI logic in a separate thread to keep the UI responsive
+    components = init_components(ui)
+    session_manager = components["session_manager"]
+    ue_relay = components["ue_relay"]
+
+    # Start UE5 relay
+    ue_relay.start()
+
     def start_ai():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(ananya.run())
+            loop.run_until_complete(session_manager.run())
         except Exception as e:
-            print(f"[MAIN] AI Logic Error: {e}")
+            LOG.error("Main", f"AI Logic Error: {e}", exc_info=True)
 
     ai_thread = threading.Thread(target=start_ai, daemon=True)
     ai_thread.start()
 
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()

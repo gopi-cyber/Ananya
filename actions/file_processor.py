@@ -39,6 +39,56 @@ def _gemini_client():
     return genai.GenerativeModel("gemini-2.5-flash")
 
 
+def extract_docx_content(file_path: str) -> str:
+    """Extracts both paragraphs and formatted tables from a .docx file in sequence."""
+    try:
+        from docx import Document
+    except ImportError:
+        return "[Error: python-docx not installed. Could not parse document.]"
+    
+    try:
+        doc = Document(file_path)
+        blocks = []
+        
+        from docx.oxml import CT_P, CT_Tbl
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
+        
+        for child in doc.element.body:
+            if isinstance(child, CT_P):
+                p = Paragraph(child, doc)
+                if p.text.strip():
+                    blocks.append(p.text.strip())
+            elif isinstance(child, CT_Tbl):
+                table = Table(child, doc)
+                table_lines = []
+                for i, row in enumerate(table.rows):
+                    row_cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+                    # Deduplicate adjacent cells to handle merged cells gracefully
+                    dedup = []
+                    for val in row_cells:
+                        if not dedup or dedup[-1] != val:
+                            dedup.append(val)
+                    row_str = " | ".join(dedup)
+                    table_lines.append(f"| {row_str} |")
+                    
+                    if i == 0 and len(dedup) > 0:
+                        separator = " | ".join(["---"] * len(dedup))
+                        table_lines.append(f"| {separator} |")
+                        
+                if table_lines:
+                    blocks.append("\n[Table]\n" + "\n".join(table_lines) + "\n")
+                    
+        if not blocks:
+            for p in doc.paragraphs:
+                if p.text.strip():
+                    blocks.append(p.text.strip())
+                    
+        return "\n\n".join(blocks)
+    except Exception as e:
+        return f"[Error parsing word document: {e}]"
+
+
 def _detect_type(path: Path) -> str:
     ext = path.suffix.lower().lstrip(".")
     image_exts = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "svg", "ico"}
@@ -252,14 +302,7 @@ def _process_text_doc(path: Path, file_type: str, action: str,
 
     def _read_content() -> str:
         if file_type == "docx":
-            try:
-                from docx import Document
-                doc  = Document(path)
-                return "\n".join(p.text for p in doc.paragraphs)
-            except ImportError:
-                return "python-docx not installed."
-            except Exception as e:
-                return f"Read failed: {e}"
+            return extract_docx_content(str(path))
         else:
             return path.read_text(encoding="utf-8", errors="ignore")
 

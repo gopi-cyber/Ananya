@@ -73,8 +73,14 @@ class ChatMessage(QFrame):
                 }
             """)
         else: # System
-            self.label.setStyleSheet("color: #888888; font-style: italic;")
-            self.content_frame.setStyleSheet("background: transparent; border: none;")
+            self.label.setStyleSheet("color: #00ffcc; font-size: 11px; font-weight: bold;")
+            self.content_frame.setStyleSheet("""
+                QFrame {
+                    background-color: rgba(0, 255, 204, 10);
+                    border: 1px dashed rgba(0, 255, 204, 30);
+                    border-radius: 8px;
+                }
+            """)
             
         bubble_layout.addWidget(self.label)
         layout.addWidget(self.content_frame)
@@ -87,6 +93,63 @@ class ChatMessage(QFrame):
         self.label.adjustSize()
         self.updateGeometry()
 
+
+class FileChip(QFrame):
+    removed = pyqtSignal(str) # Emits the file path to remove
+
+    def __init__(self, file_path, parent=None):
+        super().__init__(parent)
+        self.file_path = file_path
+        filename = os.path.basename(file_path)
+        ext = filename.split(".")[-1].upper() if "." in filename else "FILE"
+        
+        self.setFixedHeight(36)
+        self.setStyleSheet("""
+            QFrame {
+                background-color: rgba(255, 255, 255, 10);
+                border: 1px solid rgba(255, 255, 255, 20);
+                border-radius: 12px;
+            }
+        """)
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 0, 8, 0)
+        layout.setSpacing(8)
+        
+        # File Icon/Text
+        icon_label = QLabel(ext)
+        icon_label.setStyleSheet("color: #00ffcc; font-size: 9px; font-weight: bold; background: rgba(0,0,0,30); padding: 2px 4px; border-radius: 4px;")
+        layout.addWidget(icon_label)
+        
+        # Filename
+        name_label = QLabel(filename)
+        name_label.setStyleSheet("color: #e0e0e0; font-size: 12px; font-family: 'Segoe UI';")
+        name_label.setMaximumWidth(150)
+        # Elide text if too long
+        metrics = QFontMetrics(name_label.font())
+        elided_name = metrics.elidedText(filename, Qt.TextElideMode.ElideRight, 140)
+        name_label.setText(elided_name)
+        layout.addWidget(name_label)
+        
+        # Close Button
+        self.close_btn = QPushButton("\u2715") # X symbol
+        self.close_btn.setFixedSize(20, 20)
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #888888;
+                border: none;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                color: white;
+                background: rgba(255, 255, 255, 15);
+                border-radius: 10px;
+            }
+        """)
+        self.close_btn.clicked.connect(lambda: self.removed.emit(self.file_path))
+        layout.addWidget(self.close_btn)
 
 
 class ChatWidget(QWidget):
@@ -150,7 +213,7 @@ class ChatWidget(QWidget):
         line.setStyleSheet("background-color: rgba(0, 102, 255, 40);")
         self.main_layout.addWidget(line)
         
-        # 3. Input Area (Pill shaped)
+        # 3. Input Area (Pill shaped with chip support)
         input_wrapper = QFrame()
         input_wrapper.setStyleSheet("""
             QFrame {
@@ -159,8 +222,24 @@ class ChatWidget(QWidget):
                 border-radius: 20px;
             }
         """)
-        input_layout = QHBoxLayout(input_wrapper)
-        input_layout.setContentsMargins(15, 5, 10, 5)
+        # Outer vertical layout to support chips ABOVE input
+        self.outer_input_layout = QVBoxLayout(input_wrapper)
+        self.outer_input_layout.setContentsMargins(5, 5, 5, 5)
+        self.outer_input_layout.setSpacing(2)
+        
+        # Chip Container
+        self.chip_container = QWidget()
+        self.chip_container.hide() # Hidden until files attached
+        self.chip_layout = QHBoxLayout(self.chip_container)
+        self.chip_layout.setContentsMargins(10, 5, 10, 5)
+        self.chip_layout.setSpacing(8)
+        self.chip_layout.addStretch() # Align chips to left
+        
+        self.outer_input_layout.addWidget(self.chip_container)
+        
+        # Inner horizontal layout for text + send btn
+        input_layout = QHBoxLayout()
+        input_layout.setContentsMargins(10, 0, 10, 0)
         
         self.input_field = QLineEdit()
         self.input_field.setPlaceholderText("Ask Ananya anything...")
@@ -186,7 +265,10 @@ class ChatWidget(QWidget):
         
         input_layout.addWidget(self.input_field)
         input_layout.addWidget(self.send_btn)
+        self.outer_input_layout.addLayout(input_layout)
         self.main_layout.addWidget(input_wrapper)
+        
+        self.attached_files = [] # Track currently attached file paths
         
         # Connect Signals
         self.input_field.returnPressed.connect(self.handle_input)
@@ -210,13 +292,18 @@ class ChatWidget(QWidget):
         self.main_layout.addWidget(self.attach_btn)
 
     def handle_input(self):
-
         text = self.input_field.text().strip()
-        if text:
-            print(f"[UI] Input triggered: {text}")
-            self.add_log(text, "user") # Use 'user' style
+        if text or self.attached_files:
+            print(f"[UI] Input triggered: {text} | Files: {self.attached_files}")
+            
+            # If no text but files, add a default message
+            if not text and self.attached_files:
+                text = f"Analyzing {len(self.attached_files)} file(s)..."
+            
+            self.add_log(text, "user")
             self.command_entered.emit(text)
             self.input_field.clear()
+            self.clear_chips()
 
 
 
@@ -229,14 +316,52 @@ class ChatWidget(QWidget):
 
     def handle_attach(self):
         from PyQt6.QtWidgets import QFileDialog
-        import os
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Attach File", "", 
             "All Files (*);;Images (*.png *.jpg *.jpeg);;Documents (*.pdf *.txt *.docx *.py *.js *.html *.css *.json)"
         )
         if file_path:
-            self.file_selected.emit(file_path)
-            self.add_log(f"> Attached: {os.path.basename(file_path)}", "system")
+            self.add_file_chip(file_path)
+
+    def add_file_chip(self, file_path):
+        if file_path in self.attached_files:
+            return
+            
+        self.attached_files.append(file_path)
+        self.file_selected.emit(file_path)
+        
+        chip = FileChip(file_path, self)
+        chip.removed.connect(self.remove_file_chip)
+        
+        # Insert before the stretch
+        self.chip_layout.insertWidget(self.chip_layout.count() - 1, chip)
+        self.chip_container.show()
+        print(f"[UI] Chip added for: {file_path}")
+
+    def remove_file_chip(self, file_path):
+        if file_path in self.attached_files:
+            self.attached_files.remove(file_path)
+            
+        # Find and delete the widget
+        for i in range(self.chip_layout.count()):
+            item = self.chip_layout.itemAt(i)
+            if item and item.widget():
+                widget = item.widget()
+                if isinstance(widget, FileChip) and widget.file_path == file_path:
+                    widget.deleteLater()
+                    break
+        
+        if not self.attached_files:
+            self.chip_container.hide()
+
+    def clear_chips(self):
+        self.attached_files = []
+        # Clear all widgets except the stretch
+        while self.chip_layout.count() > 1:
+            item = self.chip_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.chip_container.hide()
 
     def add_log(self, text, style="plain"):
         # Map styles to senders
@@ -244,11 +369,13 @@ class ChatWidget(QWidget):
         if style in ["user", "command"]:
             sender = "user"
             self.last_ai_message = None # Interrupt streaming on user input
-        elif style == "system" or "Ananya:" in text:
+        elif style == "ai" or "Ananya:" in text:
             sender = "ai"
             text = text.replace("Ananya: ", "")
         elif style == "streaming":
             sender = "ai"
+        elif style == "system":
+            sender = "system"
 
         # Support streaming updates
         if sender == "ai" and self.last_ai_message and style == "streaming":
@@ -656,7 +783,7 @@ class SettingsWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(350, 420)
+        self.setMinimumSize(350, 480)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.hide()
         
@@ -665,13 +792,13 @@ class SettingsWidget(QWidget):
         # Main Layout
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(15, 40, 15, 15)
-        self.main_layout.setSpacing(20)
+        self.main_layout.setSpacing(15)
         
         # --- Form Container ---
         form_frame = QFrame()
         form_frame.setStyleSheet("background: transparent;")
         form_layout = QVBoxLayout(form_frame)
-        form_layout.setSpacing(15)
+        form_layout.setSpacing(12)
         
         # 1. Gemini API Keys (Multi-line)
         self.gemini_input = self.create_multi_input_group("GEMINI_API_KEYS (one per line)", "Paste multiple keys here...")
@@ -684,6 +811,10 @@ class SettingsWidget(QWidget):
         # 3. Voice Selection
         self.voice_input = self.create_input_group("VOICE_NAME", "Aoede")
         form_layout.addLayout(self.voice_input["layout"])
+        
+        # 4. NVIDIA API Key
+        self.nvidia_input = self.create_input_group("NVIDIA_API_KEY", "nvapi-c-...")
+        form_layout.addLayout(self.nvidia_input["layout"])
         
         self.main_layout.addWidget(form_frame)
         self.main_layout.addStretch()
@@ -791,6 +922,7 @@ class SettingsWidget(QWidget):
                     self.gemini_input["edit"].setText("\n".join(keys))
                     self.camera_input["edit"].setText(str(data.get("camera_index", 0)))
                     self.voice_input["edit"].setText(data.get("voice_name", "Aoede"))
+                    self.nvidia_input["edit"].setText(data.get("nvidia_api_key", ""))
         except Exception as e:
             print(f"Error loading settings: {e}")
 
@@ -809,7 +941,8 @@ class SettingsWidget(QWidget):
             data = {
                 "gemini_api_keys": clean_keys,
                 "camera_index": cam_idx,
-                "voice_name": self.voice_input["edit"].text().strip()
+                "voice_name": self.voice_input["edit"].text().strip(),
+                "nvidia_api_key": self.nvidia_input["edit"].text().strip()
             }
             
             # Ensure directory exists

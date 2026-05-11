@@ -28,6 +28,30 @@ class OrcReactor(QWidget):
         self.current_c9_radius = 220 * self.scale 
         self.target_c9_radius = 220 * self.scale
         
+        # Real-time Voice & Audio Amplitude Tracking
+        self.audio_amplitude = 0.0
+        self.target_amplitude = 0.0
+        self.is_mic_active = False
+        
+        # Floating Neon Particles System (24 Energy Sparks)
+        self.particles = []
+        for i in range(24):
+            angle = (i / 24.0) * math.pi * 2 + (math.sin(i) * 0.5)
+            base_orbit_radius = 185 + (i % 3) * 15
+            speed = 0.01 + (i % 4) * 0.005
+            direction = 1 if (i % 2 == 0) else -1
+            size = 2.0 + (i % 3) * 1.5
+            color = QColor(0, 191, 255) if (i % 3 != 0) else QColor(255, 0, 128) # Teal/Cyan vs Pink
+            self.particles.append({
+                "angle": angle,
+                "base_orbit": base_orbit_radius,
+                "speed": speed,
+                "direction": direction,
+                "size": size,
+                "color": color,
+                "phase_offset": i * 1.3
+            })
+        
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_animation)
         self.timer.start(16) # ~60 FPS
@@ -55,9 +79,29 @@ class OrcReactor(QWidget):
         lerp_speed = 0.04
         self.current_c9_radius += (self.target_c9_radius - self.current_c9_radius) * lerp_speed
 
+        # --- Smooth Audio Amplitude Decay & Decay Physics ---
+        if self.target_amplitude > self.audio_amplitude:
+            amplitude_lerp = 0.25 # Sharp attack
+        else:
+            amplitude_lerp = 0.08 # Smooth decay
+        self.audio_amplitude += (self.target_amplitude - self.audio_amplitude) * amplitude_lerp
+
+        # --- Particles Orbit Movement Update ---
+        # Particles speed up significantly as voice/audio intensity increases
+        particle_speed_mult = 1.0 + (self.audio_amplitude * 4.0)
+        for p in self.particles:
+            p["angle"] += p["speed"] * p["direction"] * particle_speed_mult
+
         # Always increment pulse_phase for continuous breathing
         self.pulse_phase += 0.06 if self.status != "SPEAKING" else 0.12
             
+        self.update()
+
+    def set_amplitude(self, amp, is_mic=False):
+        # Clip amplitude safely between 0.0 and 1.0
+        self.target_amplitude = max(0.0, min(1.0, amp))
+        self.is_mic_active = is_mic
+        # Force redraw
         self.update()
 
     def set_status(self, state):
@@ -83,14 +127,17 @@ class OrcReactor(QWidget):
         # Global Scale Factor
         S = self.scale
         
-        radius = 80 * S
-        outer_radius = 85 * S
+        # Dynamic physical scale based on voice/audio amplitude (engine pumping effect)
+        dynamic_amp_scale = 1.0 + (self.audio_amplitude * 0.15)
+        
+        radius = 80 * S * dynamic_amp_scale
+        outer_radius = 85 * S * dynamic_amp_scale
         # --- Breathing effect (Ripple: Circle 3 to Circle 8) ---
         # "spread bigger" amplitude for C3, with propagation delay for others
         def get_pulse_radius(base_r, phase_delay, amp):
             # Scale amplitude: full for SPEAKING, prominent for others
             amp_scale = 1.0 if self.status == "SPEAKING" else 0.8
-            return (base_r * S) + (math.sin(self.pulse_phase - phase_delay) * (amp * S * amp_scale))
+            return (base_r * S * dynamic_amp_scale) + (math.sin(self.pulse_phase - phase_delay) * (amp * S * amp_scale))
 
         circle3_radius = get_pulse_radius(95, 0.0, 20) # Core: highest amplitude
         circle4_radius = get_pulse_radius(115, 0.25, 14)
@@ -369,6 +416,82 @@ class OrcReactor(QWidget):
         painter.setBrush(QColor(255, 255, 255))
         painter.drawPath(outer_path)
         painter.restore()
+        
+        # --- Orbiting Neon Particles System ---
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        for p in self.particles:
+            # Particle orbital radius expands with audio amplitude and breathing
+            pulse = math.sin(self.pulse_phase + p["phase_offset"]) * 5 * S
+            amp_expansion = self.audio_amplitude * 35 * S
+            orbit_r = (p["base_orbit"] * S) + pulse + amp_expansion
+            
+            px = center.x() + orbit_r * math.cos(p["angle"])
+            py = center.y() + orbit_r * math.sin(p["angle"])
+            
+            alpha = int(120 + self.audio_amplitude * 135)
+            alpha = max(50, min(255, alpha))
+            
+            p_color = QColor(p["color"])
+            p_color.setAlpha(alpha)
+            
+            # Ambient Particle Glow
+            glow_color = QColor(p_color)
+            glow_color.setAlpha(int(alpha * 0.35))
+            painter.setBrush(glow_color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            glow_size = p["size"] * 2.8 * S
+            painter.drawEllipse(QPointF(px, py), glow_size, glow_size)
+            
+            # Particle Core
+            painter.setBrush(p_color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            p_size = p["size"] * S
+            painter.drawEllipse(QPointF(px, py), p_size, p_size)
+        painter.restore()
+
+        # --- Radial Soundwave Spectrum Visualizer (Equalizer Spikes) ---
+        if self.audio_amplitude > 0.01:
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            
+            # Pink/magenta if mic is active, blue/cyan if speakers are active
+            base_color = QColor(255, 0, 128) if self.is_mic_active else QColor(0, 191, 255)
+            
+            for i in range(48):
+                angle = (i / 48.0) * 360.0
+                rad = math.radians(angle)
+                
+                # Frequency/Fourier-like simulation wave
+                wave = abs(math.sin(i * 0.3 + self.pulse_phase * 3) * 0.4 + 
+                           math.sin(i * 0.8) * 0.4 + 
+                           math.cos(i * 1.5) * 0.2)
+                
+                start_r = circle8_radius
+                end_r = circle8_radius + (self.audio_amplitude * 55 * S * wave)
+                
+                sx = center.x() + start_r * math.cos(rad)
+                sy = center.y() + start_r * math.sin(rad)
+                
+                ex = center.x() + end_r * math.cos(rad)
+                ey = center.y() + end_r * math.sin(rad)
+                
+                # 1. Glow Line
+                glow_pen = QPen(base_color, 3.5 * S)
+                glow_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                glow_color = QColor(base_color)
+                glow_color.setAlpha(int(40 + self.audio_amplitude * 110))
+                glow_pen.setColor(glow_color)
+                painter.setPen(glow_pen)
+                painter.drawLine(QPointF(sx, sy), QPointF(ex, ey))
+                
+                # 2. Main Sharp Core
+                sharp_pen = QPen(QColor(255, 255, 255), 1.2 * S)
+                sharp_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                painter.setPen(sharp_pen)
+                painter.drawLine(QPointF(sx, sy), QPointF(ex, ey))
+                
+            painter.restore()
         
         # Circle 1 (inner)
         painter.setPen(QPen(Qt.GlobalColor.white, 3 * S))

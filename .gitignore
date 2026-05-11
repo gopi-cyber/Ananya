@@ -16,3 +16,17 @@ venv/
 # Project specific
 memory/
 scratch/
+logs/
+*.log
+
+# Testing
+.tmp/
+.coverage
+htmlcov/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

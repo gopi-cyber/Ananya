@@ -1,57 +1,71 @@
-import json
 from pathlib import Path
 from google import genai
-import random
+from core.key_manager import KeyManager
+from core.logging import LOG
+
 
 class ModelRegistry:
     def __init__(self, config_path: Path):
-        self.config_path = config_path
-        self.keys = []
-        self.load_keys()
-        
-        # Model Definitions
+        self.key_manager = KeyManager(config_path)
+        self._logger = LOG.get_logger("ModelRegistry")
+
         self.models = {
-            "CEO": "models/gemini-2.5-flash-native-audio-preview-12-2025",
-            "CTO": "models/gemma-4-31b-preview",
-            "RESEARCHER": "models/gemini-2.5-pro",
-            "ANALYST": "models/gemini-3.1-flash-lite",
-            "CREATIVE": "models/imagen-4",
-            "COMPUTER_USE": "models/computer-use-preview"
+            "CEO": "gemini-2.5-flash-native-audio-latest",
+            "CTO": "gemini-2.5-flash",
+            "RESEARCHER": "gemini-2.5-flash-lite",
+            "ANALYST": "gemini-3.1-flash-lite",
+            "CREATIVE": "imagen-4",
+            "COMPUTER_USE": "gemini-2.5-flash-lite",
+            "EXPERT_CTO": "nvidia/meta/llama-3.3-70b-instruct",
+            "REASONER": "nvidia/deepseek-ai/deepseek-r1"
         }
-        
+
+        self.last_used_key = None
         self._clients = {}
 
-    def load_keys(self):
-        try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-                self.keys = config.get("gemini_api_keys", [])
-                if not self.keys and "gemini_api_key" in config:
-                    self.keys = [config["gemini_api_key"]]
-        except Exception as e:
-            print(f"[ModelRegistry] Error loading keys: {e}")
-            self.keys = []
+    def mark_key_failed(self, api_key: str):
+        self.key_manager.mark_key_failed(api_key)
+
+    def get_active_keys(self) -> list:
+        return self.key_manager.get_active_keys()
 
     def get_client(self, model_key="CEO"):
-        if not self.keys:
+        active_keys = self.get_active_keys()
+        if not active_keys:
             return None
-            
-        # Use a random key to distribute load (simple load balancing)
-        api_key = random.choice(self.keys)
-        
-        # In a real scenario, we might want to cache clients per key or model
-        # For now, we'll return a fresh client with a chosen key
-        return genai.Client(api_key=api_key, http_options={'api_version': 'v1alpha'})
+
+        import random
+        api_key = random.choice(active_keys)
+        self.last_used_key = api_key
+
+        return genai.Client(api_key=api_key, http_options={'api_version': 'v1beta'})
+
+    def get_nvidia_client(self):
+        nv_key = self.key_manager.get_nvidia_key()
+        if not nv_key:
+            return None
+        try:
+            from openai import OpenAI
+            return OpenAI(
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key=nv_key
+            )
+        except ImportError:
+            self._logger.error("'openai' package not installed. Run pip install openai.")
+            return None
 
     def get_model_name(self, role):
         return self.models.get(role.upper(), self.models["CEO"])
 
+
 registry = None
+
 
 def init_registry(config_path: Path):
     global registry
     registry = ModelRegistry(config_path)
     return registry
+
 
 def get_registry():
     return registry

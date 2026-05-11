@@ -27,7 +27,7 @@ def save_api_keys(gemini_api_key: str) -> None:
         except Exception:
             data = {}
 
-    data["gemini_api_key"] = gemini_api_key.strip()
+    data["gemini_api_keys"] = [gemini_api_key.strip()]
 
     CONFIG_FILE.write_text(
         json.dumps(data, indent=2),
@@ -44,7 +44,8 @@ def load_api_keys() -> dict:
         return {}
 
 def get_gemini_key() -> str | None:
-    return load_api_keys().get("gemini_api_key")
+    keys = load_api_keys().get("gemini_api_keys", [])
+    return keys[0] if keys else None
 
 def is_configured() -> bool:
     key = get_gemini_key()

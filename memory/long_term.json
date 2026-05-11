@@ -6,7 +6,12 @@
     }
   },
   "preferences": {},
-  "projects": {},
+  "projects": {
+    "luxestay_hotel_system": {
+      "value": "React, NestJS, and PostgreSQL hotel management system with automated reservation analytics.",
+      "updated": "2026-05-10"
+    }
+  },
   "relationships": {
     "husband_dubai_duration": {
       "value": "5+ years",
@@ -14,5 +19,12 @@
     }
   },
   "wishes": {},
-  "notes": {}
+  "notes": {},
+  "mood_history": [
+    {
+      "mood": "frustrated",
+      "context": "Test frustration context",
+      "time": "2026-05-10T18:03:25.641282"
+    }
+  ]
 }
